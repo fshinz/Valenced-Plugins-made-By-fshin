@@ -4,241 +4,162 @@ import { React, ReactNative } from '@valenced/react'
 
 const h = (...args: any[]) => React.createElement(...args)
 
-type FiberInfo = {
+type ComponentInfo = {
   name: string
-  depth: number
-  propsJson: string
-  source?: string
+  moduleId: string
+  propTypes?: string[]
+  isForwardRef: boolean
+  isMemo: boolean
 }
 
-function collectFibers(filter: string, limit = 200): FiberInfo[] {
-  const results: FiberInfo[] = []
+function looksLikeComponent(val: unknown): boolean {
+  if (!val || (typeof val !== 'function' && typeof val !== 'object')) return false
+  if (typeof val === 'function') {
+    const name = (val as any).name ?? ''
+    // Discord component names are PascalCase or start with upper letter
+    if (!name || name[0] !== name[0].toUpperCase() || name[0] === name[0].toLowerCase()) return false
+    return true
+  }
+  // memo / forwardRef wrapper
+  const t = (val as any).$$typeof
+  if (t) {
+    const s = String(t)
+    if (s.includes('memo') || s.includes('forward')) return true
+  }
+  return false
+}
+
+function scanComponents(filter: string, limit = 150): ComponentInfo[] {
+  const g = globalThis as any
+  const registry: Record<string, any> =
+    g.__r?.registry ?? g.__metroModuleRegistry ?? g.modules ?? {}
+
+  const results: ComponentInfo[] = []
   const lower = filter.toLowerCase()
 
-  function walk(fiber: any, depth: number) {
-    if (!fiber || depth > 80 || results.length >= limit) return
+  const entries: [string, any][] = Array.isArray(registry)
+    ? (registry as any[]).map((v, i) => [String(i), v])
+    : Object.entries(registry)
 
+  for (const [id, mod] of entries) {
+    if (results.length >= limit) break
     try {
-      const typeName: string =
-        fiber.type?.displayName ??
-        fiber.type?.name ??
-        fiber.elementType?.displayName ??
-        fiber.elementType?.name ??
-        ''
+      const exp = mod?.publicModule?.exports ?? mod?.exports
+      if (!exp || typeof exp !== 'object') continue
 
-      if (
-        typeName &&
-        typeName !== 'View' &&
-        typeName !== 'Text' &&
-        typeName !== 'RCTView' &&
-        typeName !== 'RCTText' &&
-        typeName !== 'StaticContainer' &&
-        (!filter || typeName.toLowerCase().includes(lower))
-      ) {
-        const props = fiber.memoizedProps ?? fiber.pendingProps ?? {}
-        const safe: Record<string, string> = {}
-        for (const key of Object.keys(props)) {
-          if (key === 'children') continue
-          try {
-            const val = props[key]
-            safe[key] = typeof val === 'function' ? '[fn]'
-              : typeof val === 'object' && val !== null ? JSON.stringify(val)
-              : String(val)
-          } catch { safe[key] = '(error)' }
-        }
+      for (const key of Object.keys(exp)) {
+        if (results.length >= limit) break
+        if (filter && !key.toLowerCase().includes(lower)) continue
+
+        const val = exp[key]
+        if (!looksLikeComponent(val)) continue
+
+        const isMemo = !!(val as any).$$typeof && String((val as any).$$typeof).includes('memo')
+        const isForwardRef = !!(val as any).$$typeof && String((val as any).$$typeof).includes('forward')
+        const inner = isMemo ? (val as any).type : isForwardRef ? (val as any).render : val
+        const propKeys = inner?.propTypes ? Object.keys(inner.propTypes) : []
 
         results.push({
-          name: typeName,
-          depth,
-          propsJson: JSON.stringify(safe, null, 2),
-          source: fiber._debugSource
-            ? `${fiber._debugSource.fileName?.split('/').pop()}:${fiber._debugSource.lineNumber}`
-            : undefined,
+          name: key,
+          moduleId: id,
+          propTypes: propKeys.length > 0 ? propKeys : undefined,
+          isMemo,
+          isForwardRef,
         })
       }
     } catch { /* */ }
-
-    walk(fiber.child, depth + 1)
-    walk(fiber.sibling, depth)
   }
-
-  try {
-    const hook = (globalThis as any).__REACT_DEVTOOLS_GLOBAL_HOOK__
-    if (!hook) return results
-
-    for (const renderer of (hook.renderers ?? new Map()).values()) {
-      for (const root of (renderer.getFiberRoots?.() ?? [])) {
-        walk(root.current, 0)
-        if (results.length >= limit) break
-      }
-    }
-  } catch { /* */ }
 
   return results
 }
 
 export function ComponentTab() {
-  const { KeyboardAvoidingView, Platform, ScrollView, TextInput, TouchableOpacity, View } = ReactNative
-  const { Button, Text } = Design
+  const { ScrollView, TextInput, View } = ReactNative
+  const { Button, TableRow, TableRowGroup, Text } = Design
 
   const [filter, setFilter] = React.useState('')
-  const [components, setComponents] = React.useState<FiberInfo[]>([])
+  const [components, setComponents] = React.useState<ComponentInfo[]>([])
   const [scanned, setScanned] = React.useState(false)
   const [expandedIdx, setExpandedIdx] = React.useState<number | null>(null)
 
   const scan = () => {
-    setComponents(collectFibers(filter))
+    setComponents(scanComponents(filter))
     setScanned(true)
     setExpandedIdx(null)
   }
 
-  const copyItem = (item: FiberInfo) => {
-    Clipboard.setString(`${item.name}\n${item.propsJson}`)
-  }
-
   return h(
-    KeyboardAvoidingView,
-    {
-      style: { flex: 1 },
-      behavior: Platform.OS === 'ios' ? 'padding' : 'height',
-      keyboardVerticalOffset: 120,
-    },
+    ScrollView,
+    { style: { flex: 1 }, keyboardShouldPersistTaps: 'handled' },
     h(
       View,
-      { style: { flex: 1 } },
+      { style: { padding: 16, gap: 16 } },
 
       h(
-        View,
-        {
-          style: {
-            padding: 16,
-            gap: 10,
-            borderBottomWidth: 1,
-            borderBottomColor: '#2e3035',
-          },
-        },
-        h(Text, { variant: 'heading-md/semibold' }, 'Component Inspector'),
-        h(
-          Text,
-          { variant: 'text-sm/medium', color: 'text-muted' },
-          'Walks the live React fiber tree. Tap a component to expand its props.',
-        ),
-        h(
-          View,
-          { style: { flexDirection: 'row', gap: 8, alignItems: 'center' } },
-          h(TextInput, {
-            style: {
-              flex: 1,
-              backgroundColor: '#2b2d31',
-              color: '#fff',
-              padding: 10,
-              borderRadius: 8,
-              fontSize: 13,
-            },
-            placeholder: 'Filter by name (optional)',
-            placeholderTextColor: '#666',
-            value: filter,
-            onChangeText: setFilter,
-            autoCapitalize: 'none',
-            autoCorrect: false,
-            returnKeyType: 'search',
-            onSubmitEditing: scan,
-          }),
-          h(Button, { text: 'Scan', variant: 'primary', onPress: scan }),
-        ),
-        scanned
-          ? h(
-              Text,
-              { variant: 'text-xs/medium', color: 'text-muted' },
-              `${components.length} component${components.length === 1 ? '' : 's'} found`,
-            )
-          : null,
+        TableRowGroup,
+        { title: 'Component Inspector' },
+        h(TextInput, {
+          style: { padding: 10, color: '#fff', fontSize: 13 },
+          placeholder: 'Filter by component name (optional)',
+          placeholderTextColor: '#666',
+          value: filter,
+          onChangeText: setFilter,
+          autoCapitalize: 'none',
+          autoCorrect: false,
+          returnKeyType: 'search',
+          onSubmitEditing: scan,
+        }),
+        h(TableRow, {
+          label: 'Scan Metro modules',
+          subLabel: scanned ? `${components.length} component${components.length === 1 ? '' : 's'} found` : 'Finds exported React components in the Metro registry.',
+          onPress: scan,
+        }),
       ),
 
-      h(
-        ScrollView,
-        { style: { flex: 1 }, keyboardShouldPersistTaps: 'handled' },
+      scanned && components.length === 0
+        ? h(
+            TableRowGroup,
+            { title: 'No results' },
+            h(TableRow, {
+              label: filter ? `No components matched "${filter}".` : 'No React components found in Metro registry.',
+            }),
+          )
+        : null,
 
-        !scanned
-          ? h(
-              View,
-              { style: { padding: 32, alignItems: 'center' } },
-              h(
-                Text,
-                { variant: 'text-sm/medium', color: 'text-muted', style: { textAlign: 'center' } },
-                'Hit Scan to walk the current React tree.',
-              ),
-            )
-          : components.length === 0
-            ? h(
-                View,
-                { style: { padding: 32, alignItems: 'center' } },
-                h(
-                  Text,
-                  { variant: 'text-sm/medium', color: 'text-muted', style: { textAlign: 'center' } },
-                  filter
-                    ? `No components matched "${filter}".`
-                    : 'React DevTools hook not found or tree is empty.',
-                ),
-              )
-            : components.map((item, i) =>
-                h(
-                  TouchableOpacity,
-                  {
-                    key: i,
-                    onPress: () => setExpandedIdx(expandedIdx === i ? null : i),
-                    style: {
-                      borderBottomWidth: 1,
-                      borderBottomColor: '#2e303566',
-                      padding: 12,
-                      paddingLeft: 12 + item.depth * 4,
-                    },
-                  },
-                  h(
-                    View,
-                    { style: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' } },
-                    h(
-                      View,
-                      { style: { flex: 1 } },
-                      h(Text, { variant: 'text-sm/semibold', color: 'text-link' }, item.name),
-                      item.source
-                        ? h(Text, { variant: 'text-xs/medium', color: 'text-muted' }, item.source)
-                        : null,
-                    ),
-                    expandedIdx === i
-                      ? h(
-                          Text,
-                          {
-                            variant: 'text-xs/medium',
-                            color: 'text-link',
-                            onPress: (e: any) => { e.stopPropagation?.(); copyItem(item) },
-                            style: { paddingLeft: 8 },
-                          },
-                          'Copy',
-                        )
-                      : null,
-                  ),
-                  expandedIdx === i
-                    ? h(
-                        Text,
-                        {
-                          selectable: true,
-                          variant: 'text-xs/normal',
-                          style: {
-                            fontFamily: 'monospace',
-                            color: '#3fb950',
-                            lineHeight: 16,
-                            marginTop: 8,
-                          },
-                        },
-                        item.propsJson === '{}'
-                          ? '(no props)'
-                          : item.propsJson,
-                      )
-                    : null,
-                ),
-              ),
-      ),
+      scanned && components.length > 0
+        ? h(
+            TableRowGroup,
+            { title: `Results (${components.length})` },
+            components.map((item, i) =>
+              h(TableRow, {
+                key: `${item.moduleId}-${item.name}`,
+                label: item.name,
+                subLabel: expandedIdx === i
+                  ? [
+                      `Module: ${item.moduleId}`,
+                      item.isMemo ? 'React.memo' : item.isForwardRef ? 'forwardRef' : 'Component',
+                      item.propTypes ? `Props: ${item.propTypes.join(', ')}` : null,
+                    ].filter(Boolean).join('\n')
+                  : [
+                      `#${item.moduleId}`,
+                      item.isMemo ? 'memo' : item.isForwardRef ? 'forwardRef' : null,
+                    ].filter(Boolean).join(' · '),
+                subLabelLineClamp: expandedIdx === i ? 10 : 1,
+                onPress: () => setExpandedIdx(expandedIdx === i ? null : i),
+                trailing: expandedIdx === i
+                  ? h(Text, {
+                      variant: 'text-sm/medium',
+                      color: 'text-link',
+                      onPress: (e: any) => {
+                        e?.stopPropagation?.()
+                        Clipboard.setString(`${item.name} (module ${item.moduleId})${item.propTypes ? '\nProps: ' + item.propTypes.join(', ') : ''}`)
+                      },
+                    }, 'Copy')
+                  : null,
+              }),
+            ),
+          )
+        : null,
     ),
   )
 }
