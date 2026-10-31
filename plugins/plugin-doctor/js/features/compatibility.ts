@@ -2,10 +2,7 @@ import { getInstalledPlugins } from '../native'
 
 export type CompatibilityProblem = {
   id: string
-  required?: string
-  installed?: string
-  type: 'missing' | 'disabled' | 'version' | 'legacy'
-  optional: boolean
+  type: 'missing' | 'version' | 'api'
   message: string
 }
 
@@ -16,151 +13,91 @@ export type CompatibilityReport = {
   problems: CompatibilityProblem[]
 }
 
-type ManifestDependency = {
-  version?: string
-  optional?: boolean
+// Known Valenced API surface — expand this list as the API grows.
+const KNOWN_API: Record<string, string[]> = {
+  '@valenced/discord/design': [
+    'Design', 'TableRow', 'TableRowGroup', 'TableSwitchRow', 'Button', 'Text', 'Stack',
+  ],
+  '@valenced/react': ['React', 'ReactNative'],
+  '@valenced/modules/finders': ['getModules', 'withProps', 'withName'],
+  '@valenced/patcher': ['before', 'after', 'instead'],
+  '@valenced/externals/react-native-clipboard': ['Clipboard'],
 }
 
-type InstalledPlugin = {
-  internal?: boolean
-  enabled?: boolean
-  manifest?: {
-    id?: string
-    name?: string
-    version?: string
-    dependencies?: Record<string, ManifestDependency>
+function semverSatisfies(version: string, range: string): boolean {
+  // Simple range check: >=X <Y
+  try {
+    const parts = version.split('.').map(Number)
+    const major = parts[0] ?? 0
+
+    const geMatch = range.match(/>=(\d+)/)
+    const ltMatch = range.match(/<(\d+)/)
+
+    const ge = geMatch ? Number(geMatch[1]) : 0
+    const lt = ltMatch ? Number(ltMatch[1]) : Infinity
+
+    return major >= ge && major < lt
+  } catch {
+    return true
   }
 }
 
-function versionParts(value: string) {
-  return value
-    .replace(/^v/i, '')
-    .split(/[.-]/)[0]
-    .split('.')
-    .map(part => Number.parseInt(part, 10) || 0)
-}
+export async function checkAllPlugins(): Promise<CompatibilityReport[]> {
+  let plugins: any[]
 
-function compareVersions(left: string, right: string) {
-  const a = versionParts(left)
-  const b = versionParts(right)
-  const length = Math.max(a.length, b.length)
-
-  for (let index = 0; index < length; index++) {
-    const difference = (a[index] ?? 0) - (b[index] ?? 0)
-    if (difference !== 0) return difference
+  try {
+    plugins = await getInstalledPlugins()
+  } catch {
+    // If native call fails, fall back to an empty list.
+    plugins = []
   }
 
-  return 0
-}
-
-function satisfies(version: string, range = '*') {
-  if (!range || range === '*') return true
-
-  return range
-    .split(/\s+/)
-    .filter(Boolean)
-    .every(token => {
-      const match = token.match(/^(>=|<=|>|<|=)?v?(\d+(?:\.\d+)*)$/)
-      if (!match) return true
-
-      const difference = compareVersions(version, match[2])
-      const operator = match[1] ?? '='
-
-      if (operator === '>=') return difference >= 0
-      if (operator === '<=') return difference <= 0
-      if (operator === '>') return difference > 0
-      if (operator === '<') return difference < 0
-      return difference === 0
-    })
-}
-
-function isOptional(value: ManifestDependency | undefined) {
-  return value?.optional === true
-}
-
-export async function checkPluginCompatibility(
-  plugin: InstalledPlugin,
-): Promise<CompatibilityReport> {
-  const manifest = plugin.manifest ?? {}
-  const dependencies = manifest.dependencies ?? {}
-  const installed = await getInstalledPlugins()
-  const byId = new Map<string, InstalledPlugin>()
-
-  for (const item of installed ?? []) {
-    const id = item.manifest?.id
-    if (id) byId.set(id, item)
+  if (!Array.isArray(plugins) || plugins.length === 0) {
+    // Try to find plugins via the global plugin registry if the native call returned nothing.
+    try {
+      const registry = (globalThis as any).__valenced?.plugins
+      if (registry) {
+        plugins = Object.values(registry)
+      }
+    } catch {
+      plugins = []
+    }
   }
 
-  const problems: CompatibilityProblem[] = []
+  return plugins.map((p: any): CompatibilityReport => {
+    const problems: CompatibilityProblem[] = []
+    const manifest = p.manifest ?? p
 
-  for (const [id, requirement] of Object.entries(dependencies)) {
-    const optional = isOptional(requirement)
-    const found = byId.get(id)
+    // Check required valenced.api version against the running client.
+    const requiredApi = manifest?.dependencies?.['valenced.api']?.version
+    const clientVersion = (globalThis as any).__valenced?.version ?? '1.0.0'
 
-    if (id.startsWith('revenge.')) {
+    if (requiredApi && !semverSatisfies(clientVersion, requiredApi)) {
       problems.push({
-        id,
-        required: requirement.version,
-        type: 'legacy',
-        optional,
-        message: `${id} is a Revenge Next dependency and cannot run on Valenced.`,
-      })
-      continue
-    }
-
-    if (!found) {
-      problems.push({
-        id,
-        required: requirement.version,
-        type: 'missing',
-        optional,
-        message: `${id} is not installed.`,
-      })
-      continue
-    }
-
-    const installedVersion = found.manifest?.version ?? '0.0.0'
-
-    if (found.enabled === false) {
-      problems.push({
-        id,
-        required: requirement.version,
-        installed: installedVersion,
-        type: 'disabled',
-        optional,
-        message: `${id} is installed but disabled.`,
-      })
-      continue
-    }
-
-    if (!satisfies(installedVersion, requirement.version)) {
-      problems.push({
-        id,
-        required: requirement.version,
-        installed: installedVersion,
+        id: 'valenced.api',
         type: 'version',
-        optional,
-        message: `${id} requires ${requirement.version ?? '*'}, but ${installedVersion} is installed.`,
+        message: `Requires valenced.api ${requiredApi}, running ${clientVersion}`,
       })
     }
-  }
 
-  return {
-    pluginId: manifest.id ?? 'unknown',
-    pluginName: manifest.name ?? manifest.id ?? 'Unknown plugin',
-    compatible: problems.every(problem => problem.optional),
-    problems,
-  }
-}
+    // Check any declared import paths against our known API surface.
+    const imports: string[] = manifest?.imports ?? []
+    for (const imp of imports) {
+      const known = KNOWN_API[imp]
+      if (!known) {
+        problems.push({
+          id: imp,
+          type: 'api',
+          message: `Import path "${imp}" is not a recognized Valenced API.`,
+        })
+      }
+    }
 
-export async function checkAllPlugins() {
-  const installed = await getInstalledPlugins()
-  const reports: CompatibilityReport[] = []
-
-  for (const plugin of installed ?? []) {
-    if (!plugin.manifest || plugin.internal) continue
-    reports.push(await checkPluginCompatibility(plugin))
-  }
-
-  return reports
+    return {
+      pluginId: manifest?.id ?? p.id ?? 'unknown',
+      pluginName: manifest?.name ?? p.name ?? 'Unknown Plugin',
+      compatible: problems.length === 0,
+      problems,
+    }
+  })
 }
