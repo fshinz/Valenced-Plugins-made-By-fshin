@@ -1,5 +1,3 @@
-// Live Watch — subscribes to Flux stores and emits state snapshots.
-
 export type WatchEntry = {
   storeName: string
   snapshot: string
@@ -17,50 +15,59 @@ export function addWatchListener(fn: Listener) {
 }
 
 function emit(storeName: string, snapshot: unknown) {
-  const entry: WatchEntry = {
-    storeName,
-    snapshot: JSON.stringify(snapshot, null, 2),
-    timestamp: Date.now(),
-  }
-  for (const fn of listeners) {
-    try { fn(entry) } catch { /* */ }
-  }
+  const text = (() => {
+    try { return JSON.stringify(snapshot, null, 2) } catch { return String(snapshot) }
+  })()
+  const entry: WatchEntry = { storeName, snapshot: text, timestamp: Date.now() }
+  for (const fn of listeners) { try { fn(entry) } catch { /* */ } }
 }
 
-export function watchStore(storeName: string): boolean {
-  if (subscriptions.has(storeName)) return false
-
-  try {
-    const g = globalThis as any
-    const flux = g.__valenced?.flux ?? g.Flux
-    if (!flux) return false
-
-    const store = flux.getStore?.(storeName)
-    if (!store) return false
-
-    const handler = () => {
-      try {
-        const state = store.getState?.() ?? '(no getState)'
-        emit(storeName, state)
-      } catch (e) {
-        emit(storeName, { error: String(e) })
-      }
-    }
-
-    store.addChangeListener?.(handler)
-    subscriptions.set(storeName, () => store.removeChangeListener?.(handler))
-    return true
-  } catch {
-    return false
+// Try every path we know about to get the Flux dispatcher / store registry.
+function getFluxRegistry(): Record<string, any> | null {
+  const g = globalThis as any
+  const candidates = [
+    g.__valenced?.stores,
+    g.__valenced?.flux?._stores,
+    g.__valenced?.flux?.stores,
+    g.Flux?._stores,
+    g.Flux?.stores,
+    g.__flux?._stores,
+  ]
+  for (const c of candidates) {
+    if (c && typeof c === 'object' && Object.keys(c).length > 0) return c
   }
+  return null
 }
 
-export function unwatchStore(storeName: string) {
-  const unsub = subscriptions.get(storeName)
-  if (unsub) {
-    unsub()
-    subscriptions.delete(storeName)
+export function getAllStoreNames(): string[] {
+  const reg = getFluxRegistry()
+  if (!reg) return []
+  return Object.keys(reg).sort()
+}
+
+function getStore(name: string): any {
+  const reg = getFluxRegistry()
+  if (!reg) return null
+  return reg[name] ?? null
+}
+
+export function watchStore(name: string): boolean {
+  if (subscriptions.has(name)) return true
+  const store = getStore(name)
+  if (!store) return false
+
+  const handler = () => {
+    try { emit(name, store.getState?.() ?? '(no getState)') } catch (e) { emit(name, { error: String(e) }) }
   }
+
+  store.addChangeListener?.(handler)
+  subscriptions.set(name, () => store.removeChangeListener?.(handler))
+  return true
+}
+
+export function unwatchStore(name: string) {
+  subscriptions.get(name)?.()
+  subscriptions.delete(name)
 }
 
 export function getWatchedStores(): string[] {
@@ -68,8 +75,6 @@ export function getWatchedStores(): string[] {
 }
 
 export function clearAllWatches() {
-  for (const unsub of subscriptions.values()) {
-    try { unsub() } catch { /* */ }
-  }
+  for (const fn of subscriptions.values()) { try { fn() } catch { /* */ } }
   subscriptions.clear()
 }
