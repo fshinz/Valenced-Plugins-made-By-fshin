@@ -29,7 +29,13 @@ type LogEntry = {
   ts: number
 }
 
-let _logId = 0
+let logId = 0
+
+const AsyncFunction = Object.getPrototypeOf(
+  async function () {},
+).constructor as new (
+  ...args: string[]
+) => (...args: any[]) => Promise<any>
 
 export function SandboxTab() {
   const { ScrollView } = ReactNative
@@ -43,51 +49,65 @@ export function SandboxTab() {
   const [wordWrap, setWordWrap] = React.useState(true)
   const [history, setHistory] = React.useState<LogEntry[]>([])
 
+  const addHistory = (
+    code: string,
+    output: string,
+    ok: boolean,
+  ) => {
+    setHistory(prev => [
+      {
+        id: logId++,
+        code,
+        result: output,
+        ok,
+        ts: Date.now(),
+      },
+      ...prev,
+    ].slice(0, MAX_LOG))
+  }
+
   const run = async () => {
     const code = codeRef.current.trim()
-    if (!code) return
 
-    const key = `_pd_${Math.random().toString(36).slice(2)}`
+    if (!code) return
 
     try {
       if (!pluginApi) {
-        setResult('<Valenced API not available>')
-        setResultOk(false)
-        return
+        throw new Error('Valenced API is not available.')
       }
 
-      ;(globalThis as any)[key] = pluginApi
+      const runtime = (globalThis as any).valenced
 
-      // Same pattern as the built-in EvalJS: indirect eval with api injected.
-      // `valenced` is the unscoped API — valenced.discord.design, valenced.modules.finders, etc.
-      // eslint-disable-next-line no-eval
-      const res = (0, eval)(
-        `var api=${key},{unscoped:valenced}=api;undefined;${code}//# sourceURL=Valenced:PluginDoctor:Sandbox`,
+      // Execute in an async function so snippets support both
+      // top-level return and await.
+      //
+      // `api` is the plugin API; `valenced` is the unscoped runtime.
+      const execute = new AsyncFunction(
+        'api',
+        'valenced',
+        `"use strict";\n${code}\n//# sourceURL=Valenced:PluginDoctor:Sandbox`,
       )
 
-      const inspected = nodeUtil.inspect(awaitResult ? await res : res, {
+      const pending = execute(pluginApi, runtime)
+
+      const value = awaitResult
+        ? await pending
+        : pending
+
+      const inspected = nodeUtil.inspect(value, {
         depth: inspectDepth,
         showHidden,
       })
 
       setResult(inspected)
       setResultOk(true)
+      addHistory(code, inspected, true)
+    } catch (error) {
+      const stack = getErrorStack(error)
 
-      setHistory(prev => [
-        { id: _logId++, code, result: inspected, ok: true, ts: Date.now() },
-        ...prev,
-      ].slice(0, MAX_LOG))
-    } catch (e) {
-      const stack = getErrorStack(e)
       setResult(stack)
       setResultOk(false)
-
-      setHistory(prev => [
-        { id: _logId++, code, result: stack, ok: false, ts: Date.now() },
-        ...prev,
-      ].slice(0, MAX_LOG))
-    } finally {
-      delete (globalThis as any)[key]
+      addHistory(code, stack, false)
     }
   }
 
@@ -101,39 +121,57 @@ export function SandboxTab() {
       h(TextArea, {
         autoFocus: false,
         label: 'Code',
-        onChange: (v: string) => { codeRef.current = v },
-        placeholder: 'valenced.discord.design.Design.Text\n// or:\nvar gs = valenced.discord.flux.Stores.GuildStore\nreturn gs.getGuilds()',
+        onChange: (value: string) => {
+          codeRef.current = value
+        },
+        placeholder:
+          'return Object.keys(valenced.discord.flux.Stores)\n\n// Example with await:\nreturn await Promise.resolve("hello")',
         size: 'md',
       }),
 
       h(
         TableRowGroup,
         { title: 'Inspection Options' },
+
         h(TableSwitchRow, {
           label: 'Await result',
           subLabel: 'Wait for the result before displaying.',
           value: awaitResult,
           onValueChange: setAwaitResult,
         }),
+
         h(TableSwitchRow, {
           label: 'Show hidden',
           subLabel: 'Show hidden/non-enumerable properties.',
           value: showHidden,
           onValueChange: setShowHidden,
         }),
+
         h(TableRow, {
           label: 'Inspect depth',
           subLabel: 'Depth for nested object inspection.',
-          trailing: h(Text, { variant: 'text-sm/normal' }, String(inspectDepth)),
+          trailing: h(
+            Text,
+            { variant: 'text-sm/normal' },
+            String(inspectDepth),
+          ),
         }),
       ),
 
       h(Slider, {
-        endIcon: h(Text, { variant: 'text-sm/normal' }, '10'),
+        endIcon: h(
+          Text,
+          { variant: 'text-sm/normal' },
+          '10',
+        ),
         maximumValue: 10,
         minimumValue: 0,
         onValueChange: setInspectDepth,
-        startIcon: h(Text, { variant: 'text-sm/normal' }, '0'),
+        startIcon: h(
+          Text,
+          { variant: 'text-sm/normal' },
+          '0',
+        ),
         step: 1,
         value: inspectDepth,
       }),
@@ -141,9 +179,10 @@ export function SandboxTab() {
       h(
         TableRowGroup,
         { title: 'Display Options' },
+
         h(TableSwitchRow, {
           label: 'Word wrap',
-          subLabel: 'Long results wrap to next line.',
+          subLabel: 'Long results wrap to the next line.',
           value: wordWrap,
           onValueChange: setWordWrap,
         }),
@@ -158,19 +197,40 @@ export function SandboxTab() {
       h(
         Stack,
         null,
-        h(Text, { variant: 'heading-sm/semibold', color: resultOk ? 'text-strong' : 'text-danger' }, 'Result'),
+
+        h(
+          Text,
+          {
+            variant: 'heading-sm/semibold',
+            color: resultOk ? 'text-strong' : 'text-danger',
+          },
+          'Result',
+        ),
+
         h(
           Card,
           null,
+
           h(
             ScrollView,
-            { nestedScrollEnabled: true, style: { maxHeight: 300 } },
+            {
+              nestedScrollEnabled: true,
+              style: { maxHeight: 300 },
+            },
+
             h(
               ScrollView,
-              { nestedScrollEnabled: true, horizontal: !wordWrap },
+              {
+                nestedScrollEnabled: true,
+                horizontal: !wordWrap,
+              },
+
               h(
                 Text,
-                { selectable: true, style: { fontFamily: 'monospace' } },
+                {
+                  selectable: true,
+                  style: { fontFamily: 'monospace' },
+                },
                 result || '<empty>',
               ),
             ),
@@ -182,12 +242,23 @@ export function SandboxTab() {
         ? h(
             TableRowGroup,
             { title: 'History' },
+
             history.map(entry =>
               h(TableRow, {
                 key: entry.id,
-                label: entry.code.length > 60 ? entry.code.slice(0, 60) + '…' : entry.code,
-                subLabel: `${new Date(entry.ts).toLocaleTimeString()} · ${entry.ok ? '✓' : '✗'} ${entry.result.slice(0, 80)}`,
+
+                label:
+                  entry.code.length > 60
+                    ? entry.code.slice(0, 60) + '…'
+                    : entry.code,
+
+                subLabel:
+                  `${new Date(entry.ts).toLocaleTimeString()} · ` +
+                  `${entry.ok ? '✓' : '✗'} ` +
+                  entry.result.slice(0, 80),
+
                 subLabelLineClamp: 2,
+
                 onPress: () => {
                   codeRef.current = entry.code
                   setResult(entry.result)
