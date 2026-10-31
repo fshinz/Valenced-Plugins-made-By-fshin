@@ -1,35 +1,29 @@
-import { React } from '@valenced/react'
-import { PluginDoctorSettings } from './settings'
-import { bindStorage, recordError } from './storage'
+import { callNativeMethod } from '@valenced/modules/native'
 
-export default plugin({
-  jsonStorage: {
-    load: true,
-    default: {
-      entries: [],
-      enabled: true,
-    },
-  },
+let usesEnvelope = false
 
-  SettingsComponent: PluginDoctorSettings,
+export async function native<T = unknown>(name: string, args: unknown[] = []): Promise<T> {
+  const reply = await (callNativeMethod as any)(name, args)
 
-  start({ cleanup, plugin, jsonStorage }) {
-    bindStorage(jsonStorage)
-
-    const report = (error: unknown, context = 'Plugin Doctor') => {
-      recordError(error, context).catch(() => {})
+  if (reply && typeof reply === 'object' && !Array.isArray(reply)) {
+    const keys = Object.keys(reply)
+    if (keys.length === 1 && keys[0] === 'result') {
+      usesEnvelope = true
+      return reply.result as T
     }
-
-    try {
-      plugin.reportError = (error: unknown) => {
-        report(error, 'Reported plugin error')
-      }
-    } catch (error) {
-      report(error, 'Failed to register error reporter')
+    if (keys.length === 1 && keys[0] === 'error') {
+      usesEnvelope = true
+      const error = reply.error ?? {}
+      throw Object.assign(new Error(error.message ?? error.code ?? 'Native API error'), {
+        code: error.code,
+        details: error.details,
+      })
     }
+  }
 
-    cleanup(() => {
-      // Reserved for future listeners, timers, and DevTools subscriptions.
-    })
-  },
-})
+  return reply as T
+}
+
+export async function getInstalledPlugins() {
+  return native<any[]>('valenced.plugins.list')
+}
