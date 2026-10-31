@@ -1,270 +1,202 @@
+import { Page } from '@valenced/components'
 import { Design } from '@valenced/discord/design'
-import { Clipboard } from '@valenced/externals/react-native-clipboard'
+import { nodeUtil } from '@valenced/externals/browserify'
+import { getErrorStack } from '@valenced/utils/error'
 import { React, ReactNative } from '@valenced/react'
+import { pluginApi } from '../api'
 
 const h = (...args: any[]) => React.createElement(...args)
 
-function buildContext(): Record<string, unknown> {
-  const ctx: Record<string, unknown> = {}
+const {
+  Button,
+  Card,
+  Slider,
+  Stack,
+  TableRow,
+  TableRowGroup,
+  TableSwitchRow,
+  Text,
+  TextArea,
+} = Design
 
-  const tryGet = (path: string) => {
-    try { return (globalThis as any).__valenced?.require?.(path) ?? null } catch { return null }
-  }
+const MAX_LOG = 30
 
-  const design = tryGet('@valenced/discord/design')
-  if (design) Object.assign(ctx, design)
-
-  const react = tryGet('@valenced/react')
-  if (react) { ctx.React = react.React; ctx.ReactNative = react.ReactNative }
-
-  const finders = tryGet('@valenced/modules/finders')
-  if (finders) { ctx.getModules = finders.getModules; ctx.withProps = finders.withProps; ctx.withName = finders.withName }
-
-  const patcher = tryGet('@valenced/patcher')
-  if (patcher) { ctx.before = patcher.before; ctx.after = patcher.after; ctx.instead = patcher.instead }
-
-  const clip = tryGet('@valenced/externals/react-native-clipboard')
-  if (clip) ctx.Clipboard = clip.Clipboard ?? clip
-
-  const flux = (globalThis as any).__valenced?.flux
-  if (flux) {
-    ctx.Flux = flux
-    ctx.getStore = (name: string) => flux.getStore?.(name)
-  }
-
-  ctx.log = (...args: any[]) => console.log('[Sandbox]', ...args)
-
-  return ctx
-}
-
-export type SandboxResult = {
+type LogEntry = {
+  id: number
+  code: string
+  result: string
   ok: boolean
-  value?: string
-  error?: string
-  duration: number
+  ts: number
 }
 
-function runSandbox(code: string): SandboxResult {
-  const start = Date.now()
-
-  try {
-    const ctx = buildContext()
-    const keys = Object.keys(ctx)
-    const vals = keys.map(k => ctx[k])
-
-    // eslint-disable-next-line no-new-func
-    const fn = new Function(
-      ...keys,
-      `"use strict"; try { const __r = (function(){ ${code} })(); if(__r && typeof __r.then === 'function'){ return __r.then(function(v){ return String(v == null ? 'undefined' : v); }); } return String(__r == null ? 'undefined' : __r); } catch(e){ throw e; }`,
-    )
-
-    const raw = fn(...vals)
-
-    if (raw && typeof (raw as any).then === 'function') {
-      ;(raw as Promise<any>)
-        .then(v => console.log('[Sandbox async result]', v))
-        .catch(e => console.error('[Sandbox async error]', e))
-      return { ok: true, value: '(async — check console for result)', duration: Date.now() - start }
-    }
-
-    return { ok: true, value: String(raw ?? 'undefined'), duration: Date.now() - start }
-  } catch (e) {
-    return {
-      ok: false,
-      error: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e),
-      duration: Date.now() - start,
-    }
-  }
-}
-
-const EXAMPLES = [
-  {
-    label: 'List Design keys',
-    code: `return Object.keys(Design || {}).join(', ')`,
-  },
-  {
-    label: 'Find module by prop',
-    code: `getModules(withProps('getChannel'), function(m){ log(m) })\nreturn 'check console'`,
-  },
-  {
-    label: 'List all store names',
-    code: `return Object.keys(Flux?._stores ?? Flux?.stores ?? {}).join(', ')`,
-  },
-  {
-    label: 'Get guild count',
-    code: `var gs = getStore('GuildStore')\nreturn gs ? Object.keys(gs.getGuilds?.() ?? {}).length + ' guilds' : 'GuildStore not found'`,
-  },
-]
+let _logId = 0
 
 export function SandboxTab() {
-  const { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } = ReactNative
-  const { Button, Text, TableRow, TableRowGroup } = Design
+  const { ScrollView } = ReactNative
 
-  const [code, setCode] = React.useState('')
-  const [result, setResult] = React.useState<SandboxResult | null>(null)
+  const codeRef = React.useRef('')
+  const [result, setResult] = React.useState('')
+  const [resultOk, setResultOk] = React.useState(true)
+  const [awaitResult, setAwaitResult] = React.useState(true)
+  const [showHidden, setShowHidden] = React.useState(true)
+  const [inspectDepth, setInspectDepth] = React.useState(3)
+  const [wordWrap, setWordWrap] = React.useState(true)
+  const [history, setHistory] = React.useState<LogEntry[]>([])
 
-  const run = () => setResult(runSandbox(code))
+  const run = async () => {
+    const code = codeRef.current.trim()
+    if (!code) return
 
-  const copy = () => {
-    const text = result?.value ?? result?.error ?? ''
-    if (text) Clipboard.setString(text)
+    const key = `_pd_${Math.random().toString(36).slice(2)}`
+
+    try {
+      if (!pluginApi) {
+        setResult('<Valenced API not available>')
+        setResultOk(false)
+        return
+      }
+
+      ;(globalThis as any)[key] = pluginApi
+
+      // Same pattern as the built-in EvalJS: indirect eval with api injected.
+      // `valenced` is the unscoped API — valenced.discord.design, valenced.modules.finders, etc.
+      // eslint-disable-next-line no-eval
+      const res = (0, eval)(
+        `var api=${key},{unscoped:valenced}=api;undefined;${code}//# sourceURL=Valenced:PluginDoctor:Sandbox`,
+      )
+
+      const inspected = nodeUtil.inspect(awaitResult ? await res : res, {
+        depth: inspectDepth,
+        showHidden,
+      })
+
+      setResult(inspected)
+      setResultOk(true)
+
+      setHistory(prev => [
+        { id: _logId++, code, result: inspected, ok: true, ts: Date.now() },
+        ...prev,
+      ].slice(0, MAX_LOG))
+    } catch (e) {
+      const stack = getErrorStack(e)
+      setResult(stack)
+      setResultOk(false)
+
+      setHistory(prev => [
+        { id: _logId++, code, result: stack, ok: false, ts: Date.now() },
+        ...prev,
+      ].slice(0, MAX_LOG))
+    } finally {
+      delete (globalThis as any)[key]
+    }
   }
 
   return h(
-    KeyboardAvoidingView,
-    {
-      style: { flex: 1 },
-      behavior: Platform.OS === 'ios' ? 'padding' : 'height',
-      keyboardVerticalOffset: 120,
-    },
+    ScrollView,
+    { contentContainerStyle: { paddingBottom: 32 } },
     h(
-      ScrollView,
-      { style: { flex: 1 }, keyboardShouldPersistTaps: 'handled' },
+      Page,
+      { spacing: 16 },
+
+      h(TextArea, {
+        autoFocus: false,
+        label: 'Code',
+        onChange: (v: string) => { codeRef.current = v },
+        placeholder: 'valenced.discord.design.Design.Text\n// or:\nvar gs = valenced.discord.flux.Stores.GuildStore\nreturn gs.getGuilds()',
+        size: 'md',
+      }),
+
       h(
-        View,
-        { style: { padding: 16, gap: 12 } },
-
-        h(Text, { variant: 'heading-md/semibold' }, 'Plugin Sandbox'),
-        h(
-          Text,
-          { variant: 'text-sm/medium', color: 'text-muted' },
-          'Run JS snippets with Valenced APIs pre-loaded. Available: Design, React, ReactNative, getModules, withProps, withName, Clipboard, Flux, getStore, log.',
-        ),
-
-        h(
-          TableRowGroup,
-          { title: 'Quick examples' },
-          EXAMPLES.map(ex =>
-            h(TableRow, {
-              key: ex.label,
-              label: ex.label,
-              onPress: () => { setCode(ex.code); setResult(null) },
-            }),
-          ),
-        ),
-
-        h(
-          View,
-          {
-            style: {
-              borderWidth: 1,
-              borderColor: '#444',
-              borderRadius: 10,
-              backgroundColor: '#111214',
-              overflow: 'hidden',
-            },
-          },
-          h(
-            View,
-            {
-              style: {
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                paddingHorizontal: 12,
-                paddingTop: 8,
-                paddingBottom: 4,
-              },
-            },
-            h(Text, { variant: 'text-xs/semibold', color: 'text-muted' }, 'SNIPPET'),
-            code.length > 0
-              ? h(
-                  Text,
-                  {
-                    variant: 'text-xs/medium',
-                    color: 'text-link',
-                    onPress: () => { setCode(''); setResult(null) },
-                  },
-                  'Clear',
-                )
-              : null,
-          ),
-          h(TextInput, {
-            style: {
-              color: '#e6edf3',
-              fontFamily: 'monospace',
-              fontSize: 13,
-              lineHeight: 20,
-              minHeight: 140,
-              paddingHorizontal: 12,
-              paddingBottom: 12,
-              textAlignVertical: 'top',
-            },
-            multiline: true,
-            scrollEnabled: false,
-            placeholder: '// e.g.\nreturn Object.keys(Design || {}).join(", ")',
-            placeholderTextColor: '#555',
-            value: code,
-            onChangeText: setCode,
-            autoCapitalize: 'none',
-            autoCorrect: false,
-            spellCheck: false,
-          }),
-        ),
-
-        h(Button, {
-          text: 'Run',
-          variant: 'primary',
-          disabled: !code.trim(),
-          onPress: run,
+        TableRowGroup,
+        { title: 'Inspection Options' },
+        h(TableSwitchRow, {
+          label: 'Await result',
+          subLabel: 'Wait for the result before displaying.',
+          value: awaitResult,
+          onValueChange: setAwaitResult,
         }),
-
-        result != null
-          ? h(
-              View,
-              {
-                style: {
-                  borderWidth: 1,
-                  borderColor: result.ok ? '#2d6a4f' : '#7a1a1a',
-                  borderRadius: 10,
-                  backgroundColor: result.ok ? '#0d1f17' : '#1a0d0d',
-                  overflow: 'hidden',
-                },
-              },
-              h(
-                View,
-                {
-                  style: {
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    paddingHorizontal: 12,
-                    paddingVertical: 8,
-                    borderBottomWidth: 1,
-                    borderBottomColor: result.ok ? '#2d6a4f' : '#7a1a1a',
-                  },
-                },
-                h(
-                  Text,
-                  {
-                    variant: 'text-sm/semibold',
-                    color: result.ok ? 'text-positive' : 'text-danger',
-                  },
-                  result.ok ? `✓ OK  ·  ${result.duration}ms` : `✗ Error  ·  ${result.duration}ms`,
-                ),
-                h(
-                  Text,
-                  { variant: 'text-sm/medium', color: 'text-link', onPress: copy },
-                  'Copy',
-                ),
-              ),
-              h(TextInput, {
-                style: {
-                  color: result.ok ? '#3fb950' : '#f85149',
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  lineHeight: 18,
-                  padding: 12,
-                  textAlignVertical: 'top',
-                },
-                multiline: true,
-                scrollEnabled: false,
-                editable: false,
-                value: result.ok ? (result.value ?? '') : (result.error ?? ''),
-              }),
-            )
-          : null,
+        h(TableSwitchRow, {
+          label: 'Show hidden',
+          subLabel: 'Show hidden/non-enumerable properties.',
+          value: showHidden,
+          onValueChange: setShowHidden,
+        }),
+        h(TableRow, {
+          label: 'Inspect depth',
+          subLabel: 'Depth for nested object inspection.',
+          trailing: h(Text, { variant: 'text-sm/normal' }, String(inspectDepth)),
+        }),
       ),
+
+      h(Slider, {
+        endIcon: h(Text, { variant: 'text-sm/normal' }, '10'),
+        maximumValue: 10,
+        minimumValue: 0,
+        onValueChange: setInspectDepth,
+        startIcon: h(Text, { variant: 'text-sm/normal' }, '0'),
+        step: 1,
+        value: inspectDepth,
+      }),
+
+      h(
+        TableRowGroup,
+        { title: 'Display Options' },
+        h(TableSwitchRow, {
+          label: 'Word wrap',
+          subLabel: 'Long results wrap to next line.',
+          value: wordWrap,
+          onValueChange: setWordWrap,
+        }),
+      ),
+
+      h(Button, {
+        text: 'Evaluate',
+        variant: 'primary',
+        onPress: run,
+      }),
+
+      h(
+        Stack,
+        null,
+        h(Text, { variant: 'heading-sm/semibold', color: resultOk ? 'text-strong' : 'text-danger' }, 'Result'),
+        h(
+          Card,
+          null,
+          h(
+            ScrollView,
+            { nestedScrollEnabled: true, style: { maxHeight: 300 } },
+            h(
+              ScrollView,
+              { nestedScrollEnabled: true, horizontal: !wordWrap },
+              h(
+                Text,
+                { selectable: true, style: { fontFamily: 'monospace' } },
+                result || '<empty>',
+              ),
+            ),
+          ),
+        ),
+      ),
+
+      history.length > 0
+        ? h(
+            TableRowGroup,
+            { title: 'History' },
+            history.map(entry =>
+              h(TableRow, {
+                key: entry.id,
+                label: entry.code.length > 60 ? entry.code.slice(0, 60) + '…' : entry.code,
+                subLabel: `${new Date(entry.ts).toLocaleTimeString()} · ${entry.ok ? '✓' : '✗'} ${entry.result.slice(0, 80)}`,
+                subLabelLineClamp: 2,
+                onPress: () => {
+                  codeRef.current = entry.code
+                  setResult(entry.result)
+                  setResultOk(entry.ok)
+                },
+              }),
+            ),
+          )
+        : null,
     ),
   )
 }
