@@ -1,3 +1,4 @@
+import { Page } from '@valenced/components'
 import { Design } from '@valenced/discord/design'
 import { Clipboard } from '@valenced/externals/react-native-clipboard'
 import { React, ReactNative } from '@valenced/react'
@@ -27,23 +28,20 @@ function ErrorCard({ entry }: { entry: DiagnosticEntry }) {
           label: 'Stack trace',
           subLabel: entry.stack,
           subLabelLineClamp: 20,
-          onPress: () => {
-            Clipboard.setString(entry.stack ?? '')
-          },
-          trailing: h(Design.Text, { variant: 'text-sm/medium', color: 'text-muted' }, 'Copy'),
+          trailing: h(TableRow.TrailingText, { text: 'Copy' }),
+          onPress: () => Clipboard.setString(entry.stack ?? ''),
         })
       : null,
   )
 }
 
 export function ErrorsTab() {
-  const { ScrollView, View } = ReactNative
-  const { Button, Text, TableRowGroup, TableRow } = Design
+  const { ScrollView } = ReactNative
+  const { Button, Stack, TableRow, TableRowGroup } = Design
 
   const [, rerender] = React.useReducer((n: number) => n + 1, 0)
 
-  const state = readState()
-  const entries = state.entries
+  const { entries, enabled } = readState()
 
   const clear = async () => {
     await clearErrors()
@@ -59,38 +57,30 @@ export function ErrorsTab() {
 
   return h(
     ScrollView,
-    { style: { flex: 1 } },
+    { contentContainerStyle: { paddingBottom: 32 } },
     h(
-      View,
-      { style: { padding: 16, gap: 12 } },
-
+      Page,
+      { spacing: 16 },
       h(
         TableRowGroup,
         { title: 'Summary' },
         h(TableRow, {
           label: 'Recorded errors',
-          subLabel: `${entries.length} error${entries.length === 1 ? '' : 's'}`,
+          trailing: h(TableRow.TrailingText, { text: String(entries.length) }),
         }),
         h(TableRow, {
           label: 'Monitoring',
-          subLabel: state.enabled ? 'Active' : 'Paused',
+          trailing: h(TableRow.TrailingText, { text: enabled ? 'Active' : 'Paused' }),
         }),
       ),
-
       h(
-        View,
-        { style: { flexDirection: 'row', gap: 8 } },
-        h(Button, { text: 'Copy all', variant: 'secondary', onPress: copyAll }),
-        h(Button, {
-          text: 'Clear',
-          variant: 'destructive',
-          disabled: entries.length === 0,
-          onPress: clear,
-        }),
+        Stack,
+        { direction: 'horizontal', spacing: 8 },
+        h(Button, { text: 'Copy all', variant: 'secondary', grow: true, disabled: entries.length === 0, onPress: copyAll }),
+        h(Button, { text: 'Clear', variant: 'destructive', grow: true, disabled: entries.length === 0, onPress: clear }),
       ),
-
       entries.length === 0
-        ? h(Text, { variant: 'text-md/medium', color: 'text-muted' }, 'No errors recorded.')
+        ? h(TableRowGroup, { title: 'Errors' }, h(TableRow, { label: 'No errors recorded.' }))
         : entries.map(entry => h(ErrorCard, { key: entry.id, entry })),
     ),
   )

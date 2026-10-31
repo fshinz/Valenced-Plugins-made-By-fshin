@@ -1,31 +1,31 @@
+import { Page } from '@valenced/components'
 import { Design } from '@valenced/discord/design'
 import { React, ReactNative } from '@valenced/react'
 import { checkAllPlugins, type CompatibilityReport } from '../features/compatibility'
+import { recordError } from '../storage'
 
 const h = (...args: any[]) => React.createElement(...args)
 
-function ReportRow({ report }: { report: CompatibilityReport }) {
+function ReportGroup({ report }: { report: CompatibilityReport }) {
   const { TableRow, TableRowGroup } = Design
 
   return h(
     TableRowGroup,
-    { title: `${report.pluginName}${report.compatible ? ' ✓' : ' ✗'}` },
-    report.compatible
-      ? h(TableRow, { label: 'No problems found.', subLabel: report.pluginId })
-      : report.problems.map(p =>
-          h(TableRow, {
-            key: `${p.id}-${p.type}`,
-            label: p.id,
-            subLabel: p.message,
-            subLabelLineClamp: 3,
-          }),
-        ),
+    { title: report.pluginName, description: report.pluginId },
+    report.problems.map(problem =>
+      h(TableRow, {
+        key: `${problem.id}-${problem.type}`,
+        label: problem.id,
+        subLabel: problem.message,
+        subLabelLineClamp: 3,
+      }),
+    ),
   )
 }
 
 export function CompatibilityTab() {
-  const { ScrollView, View } = ReactNative
-  const { Button, TableRow, TableRowGroup, Text } = Design
+  const { ScrollView } = ReactNative
+  const { Button, TableRow, TableRowGroup } = Design
 
   const [reports, setReports] = React.useState<CompatibilityReport[]>([])
   const [checking, setChecking] = React.useState(false)
@@ -35,9 +35,9 @@ export function CompatibilityTab() {
     setChecking(true)
     try {
       setReports(await checkAllPlugins())
-    } catch (e) {
-      console.error('[PluginDoctor] Compatibility check failed', e)
+    } catch (error) {
       setReports([])
+      recordError(error, 'Compatibility check failed')
     } finally {
       setChecking(false)
       setDone(true)
@@ -49,50 +49,28 @@ export function CompatibilityTab() {
 
   return h(
     ScrollView,
-    { style: { flex: 1 } },
+    { contentContainerStyle: { paddingBottom: 32 } },
     h(
-      View,
-      { style: { padding: 16, gap: 12 } },
-      h(Text, { variant: 'heading-md/semibold' }, 'API Compatibility Checker'),
-      h(
-        Text,
-        { variant: 'text-sm/medium', color: 'text-muted' },
-        'Checks installed plugins for missing or incompatible API dependencies.',
-      ),
-
+      Page,
+      { spacing: 16 },
       h(
         TableRowGroup,
-        { title: 'Status' },
+        { title: 'API Compatibility Checker', description: 'Checks installed plugins for missing or incompatible API dependencies.' },
         h(TableRow, {
-          label: done
-            ? `${incompatible.length} incompatible, ${compatible.length} compatible`
-            : 'Not yet checked.',
+          label: 'Status',
+          trailing: h(TableRow.TrailingText, {
+            text: done ? `${incompatible.length} incompatible, ${compatible.length} compatible` : 'Not checked',
+          }),
         }),
       ),
-
-      h(Button, {
-        text: checking ? 'Checking…' : 'Run check',
-        variant: 'primary',
-        disabled: checking,
-        onPress: run,
-      }),
-
-      done && incompatible.length === 0
-        ? h(Text, { variant: 'text-md/medium', color: 'text-positive' }, 'All plugins look compatible.')
-        : null,
-
-      ...incompatible.map(r => h(ReportRow, { key: r.pluginId, report: r })),
-
+      h(Button, { text: checking ? 'Checking…' : 'Run check', variant: 'primary', loading: checking, disabled: checking, onPress: run }),
+      incompatible.map(report => h(ReportGroup, { key: report.pluginId, report })),
       done && compatible.length > 0
         ? h(
             TableRowGroup,
             { title: 'Compatible plugins' },
-            compatible.map(r =>
-              h(TableRow, {
-                key: r.pluginId,
-                label: r.pluginName,
-                subLabel: r.pluginId,
-              }),
+            compatible.map(report =>
+              h(TableRow, { key: report.pluginId, label: report.pluginName, subLabel: report.pluginId }),
             ),
           )
         : null,
