@@ -1,129 +1,253 @@
 import { Design } from '@valenced/discord/design'
 import { Clipboard } from '@valenced/externals/react-native-clipboard'
 import { React, ReactNative } from '@valenced/react'
-import { runSandbox } from '../features/sandbox'
 
 const h = (...args: any[]) => React.createElement(...args)
 
+// Build a flat context object of everything we want available in snippets.
+// We inject them as named closure params — no `require` needed.
+function buildContext(): Record<string, unknown> {
+  const ctx: Record<string, unknown> = {}
+
+  const tryGet = (path: string) => {
+    try { return (globalThis as any).__valenced?.require?.(path) ?? null } catch { return null }
+  }
+
+  const design = tryGet('@valenced/discord/design')
+  if (design) Object.assign(ctx, design)
+
+  const react = tryGet('@valenced/react')
+  if (react) { ctx.React = react.React; ctx.ReactNative = react.ReactNative }
+
+  const finders = tryGet('@valenced/modules/finders')
+  if (finders) { ctx.getModules = finders.getModules; ctx.withProps = finders.withProps; ctx.withName = finders.withName }
+
+  const patcher = tryGet('@valenced/patcher')
+  if (patcher) { ctx.before = patcher.before; ctx.after = patcher.after; ctx.instead = patcher.instead }
+
+  const clip = tryGet('@valenced/externals/react-native-clipboard')
+  if (clip) ctx.Clipboard = clip.Clipboard ?? clip
+
+  // Expose the Flux store getter directly.
+  const flux = (globalThis as any).__valenced?.flux
+  if (flux) {
+    ctx.Flux = flux
+    ctx.getStore = (name: string) => flux.getStore?.(name)
+  }
+
+  ctx.log = (...args: any[]) => console.log('[Sandbox]', ...args)
+
+  return ctx
+}
+
+export type SandboxResult = {
+  ok: boolean
+  value?: string
+  error?: string
+  duration: number
+}
+
+function runSandbox(code: string): SandboxResult {
+  const start = Date.now()
+
+  try {
+    const ctx = buildContext()
+    const keys = Object.keys(ctx)
+    const vals = keys.map(k => ctx[k])
+
+    // eslint-disable-next-line no-new-func
+    const fn = new Function(
+      ...keys,
+      `"use strict"; try { const __r = (function(){ ${code} })(); if(__r instanceof Promise){ return __r.then(v => String(v ?? 'undefined')); } return String(__r ?? 'undefined'); } catch(e){ throw e; }`,
+    )
+
+    const raw = fn(...vals)
+
+    if (raw && typeof (raw as any).then === 'function') {
+      ;(raw as Promise<any>)
+        .then(v => console.log('[Sandbox async result]', v))
+        .catch(e => console.error('[Sandbox async error]', e))
+      return { ok: true, value: '(async — check console for result)', duration: Date.now() - start }
+    }
+
+    return { ok: true, value: String(raw ?? 'undefined'), duration: Date.now() - start }
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e),
+      duration: Date.now() - start,
+    }
+  }
+}
+
+// Hermes doesn't support async/await in new Function — strip `await` from examples.
 const EXAMPLES = [
   {
     label: 'List Design keys',
-    code: `const { Design } = require('@valenced/discord/design');\nreturn Object.keys(Design).join(', ')`,
+    code: `return Object.keys(Design || {}).join(', ')`,
   },
   {
-    label: 'Find a module by prop',
-    code: `const { getModules, withProps } = require('@valenced/modules/finders');\ngetModules(withProps('getChannel'), m => console.log('[Sandbox]', m))`,
+    label: 'Find module by prop',
+    code: `getModules(withProps('getChannel'), m => log(m))\nreturn 'check console'`,
   },
   {
-    label: 'Read Clipboard',
-    code: `const { Clipboard } = require('@valenced/externals/react-native-clipboard');\nreturn await Clipboard.getString()`,
+    label: 'List watched stores',
+    code: `return Object.keys(Flux?._stores ?? Flux?.stores ?? {}).join(', ')`,
+  },
+  {
+    label: 'Get guild count',
+    code: `const gs = getStore?.('GuildStore')\nreturn gs ? Object.keys(gs.getGuilds?.() ?? {}).length + ' guilds' : 'GuildStore not found'`,
   },
 ]
 
 export function SandboxTab() {
-  const { ScrollView, TextInput, View } = ReactNative
-  const { Button, TableRow, TableRowGroup, Text } = Design
+  const { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } = ReactNative
+  const { Button, Text, TableRow, TableRowGroup } = Design
 
   const [code, setCode] = React.useState('')
-  const [result, setResult] = React.useState<{ ok: boolean; value?: string; error?: string; duration: number } | null>(null)
+  const [result, setResult] = React.useState<SandboxResult | null>(null)
 
-  const run = () => {
-    const res = runSandbox(code)
-    setResult(res)
-  }
+  const run = () => setResult(runSandbox(code))
 
   const copy = () => {
-    if (result?.value) Clipboard.setString(result.value)
-    else if (result?.error) Clipboard.setString(result.error)
+    const text = result?.value ?? result?.error ?? ''
+    if (text) Clipboard.setString(text)
   }
 
   return h(
-    ScrollView,
-    { style: { flex: 1, padding: 16 } },
+    KeyboardAvoidingView,
+    {
+      style: { flex: 1 },
+      behavior: Platform.OS === 'ios' ? 'padding' : 'height',
+      keyboardVerticalOffset: 120,
+    },
     h(
-      View,
-      { style: { gap: 12 } },
-      h(Text, { variant: 'heading-md/semibold' }, 'Plugin Sandbox'),
-      h(
-        Text,
-        { variant: 'text-sm/medium', color: 'text-muted' },
-        'Run small JS snippets against Valenced APIs without rebuilding.',
-      ),
-
-      h(
-        TableRowGroup,
-        { title: 'Examples' },
-        EXAMPLES.map(ex =>
-          h(TableRow, {
-            key: ex.label,
-            label: ex.label,
-            onPress: () => setCode(ex.code),
-          }),
-        ),
-      ),
-
-      h(TextInput, {
-        style: {
-          borderWidth: 1,
-          borderColor: '#555',
-          borderRadius: 8,
-          padding: 10,
-          color: '#fff',
-          fontFamily: 'monospace',
-          fontSize: 13,
-          minHeight: 120,
-          textAlignVertical: 'top',
-        },
-        multiline: true,
-        placeholder: '// JS snippet\nreturn 1 + 1',
-        placeholderTextColor: '#888',
-        value: code,
-        onChangeText: setCode,
-      }),
-
+      ScrollView,
+      { style: { flex: 1 }, keyboardShouldPersistTaps: 'handled' },
       h(
         View,
-        { style: { flexDirection: 'row', gap: 8 } },
-        h(Button, { text: 'Run', variant: 'primary', onPress: run }),
-        h(Button, {
-          text: 'Clear',
-          variant: 'secondary',
-          onPress: () => { setCode(''); setResult(null) },
-        }),
-      ),
+        { style: { padding: 16, gap: 12 } },
 
-      result
-        ? h(
-            View,
-            { style: { gap: 8 } },
-            h(
-              View,
-              { style: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' } },
-              h(
-                Text,
-                { variant: 'text-sm/semibold', color: result.ok ? 'text-positive' : 'text-danger' },
-                result.ok ? `✓ OK (${result.duration}ms)` : `✗ Error (${result.duration}ms)`,
-              ),
-              h(Button, { text: 'Copy', variant: 'secondary', size: 'sm', onPress: copy }),
-            ),
-            h(TextInput, {
-              style: {
-                borderWidth: 1,
-                borderColor: result.ok ? '#3a3' : '#a33',
-                borderRadius: 8,
-                padding: 10,
-                color: '#fff',
-                fontFamily: 'monospace',
-                fontSize: 12,
-                minHeight: 80,
-                textAlignVertical: 'top',
-              },
-              multiline: true,
-              editable: false,
-              value: result.ok ? (result.value ?? '') : (result.error ?? ''),
+        h(Text, { variant: 'heading-md/semibold' }, 'Plugin Sandbox'),
+        h(
+          Text,
+          { variant: 'text-sm/medium', color: 'text-muted' },
+          'Run JS snippets with Valenced APIs pre-loaded. Available: Design, React, ReactNative, getModules, withProps, withName, Clipboard, Flux, getStore, log.',
+        ),
+
+        h(
+          TableRowGroup,
+          { title: 'Quick examples' },
+          EXAMPLES.map(ex =>
+            h(TableRow, {
+              key: ex.label,
+              label: ex.label,
+              onPress: () => { setCode(ex.code); setResult(null) },
             }),
-          )
-        : null,
-    ),
-  )
-}
+          ),
+        ),
+
+        // Code input
+        h(
+          View,
+          {
+            style: {
+              borderWidth: 1,
+              borderColor: '#444',
+              borderRadius: 10,
+              backgroundColor: '#111214',
+              overflow: 'hidden',
+            },
+          },
+          h(
+            View,
+            { style: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4 } },
+            h(Text, { variant: 'text-xs/semibold', color: 'text-muted' }, 'SNIPPET'),
+            code.length > 0
+              ? h(
+                  Text,
+                  {
+                    variant: 'text-xs/medium',
+                    color: 'text-link',
+                    onPress: () => { setCode(''); setResult(null) },
+                  },
+                  'Clear',
+                )
+              : null,
+          ),
+          h(TextInput, {
+            style: {
+              color: '#e6edf3',
+              fontFamily: 'monospace',
+              fontSize: 13,
+              lineHeight: 20,
+              minHeight: 140,
+              paddingHorizontal: 12,
+              paddingBottom: 12,
+              textAlignVertical: 'top',
+            },
+            multiline: true,
+            scrollEnabled: false,
+            placeholder: '// e.g.\nreturn Object.keys(Design || {}).join(", ")',
+            placeholderTextColor: '#555',
+            value: code,
+            onChangeText: setCode,
+            autoCapitalize: 'none',
+            autoCorrect: false,
+            spellCheck: false,
+          }),
+        ),
+
+        h(Button, {
+          text: 'Run',
+          variant: 'primary',
+          disabled: !code.trim(),
+          onPress: run,
+        }),
+
+        result
+          ? h(
+              View,
+              {
+                style: {
+                  borderWidth: 1,
+                  borderColor: result.ok ? '#2d6a4f' : '#7a1a1a',
+                  borderRadius: 10,
+                  backgroundColor: result.ok ? '#0d1f17' : '#1a0d0d',
+                  overflow: 'hidden',
+                },
+              },
+              h(
+                View,
+                {
+                  style: {
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderBottomWidth: 1,
+                    borderBottomColor: result.ok ? '#2d6a4f' : '#7a1a1a',
+                  },
+                },
+                h(
+                  Text,
+                  { variant: 'text-sm/semibold', color: result.ok ? 'text-positive' : 'text-danger' },
+                  result.ok ? `✓ OK  ·  ${result.duration}ms` : `✗ Error  ·  ${result.duration}ms`,
+                ),
+                h(
+                  Text,
+                  { variant: 'text-sm/medium', color: 'text-link', onPress: copy },
+                  'Copy',
+                ),
+              ),
+              h(TextInput, {
+                style: {
+                  color: result.ok ? '#3fb950' : '#f85149',
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  lineHeight: 18,
+                  padding: 12,
+                  textAlignVertical: 'top',
+                },
+                multiline: true,
