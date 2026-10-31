@@ -4,7 +4,7 @@
 "name": "Plugin Doctor",
 "description": "Diagnostics and compatibility tools for Valenced plugin developers",
 "author": "shin <1381008677301129257> (https://github.com/fshinz/Valenced-Plugins-made-By-fshin)",
-"version": "1.0.0",
+"version": "1.0.1",
 
 "dependencies": {
     "valenced.api": {
