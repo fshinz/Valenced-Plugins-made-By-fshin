@@ -1,0 +1,23 @@
+{
+        "format": 1,
+        "id": "shin.plugin-doctor",
+        "name": "Plugin Doctor",
+        "description": "Diagnostics and compatibility tools for Valenced plugin developers",
+        "author": "shin <1381008677301129257> (Github Page \"https://github.com/fshinz/Valenced-Plugins-made-By-fshin")",
+        "version": "1.0.0",
+        "dependencies": {
+                "valenced.api": {
+                        "version": ">=1 <2"
+                },
+                "discord": {
+                        "version": "*"
+                }
+        },
+        "dist": {
+                "script": "index.js",
+                "android": {
+                        "path": "plugin.jar",
+                        "class": "com.example.plugin.MyPlugin"
+                }
+        }
+}
