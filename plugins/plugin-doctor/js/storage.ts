@@ -32,9 +32,7 @@ export function bindStorage(next: JsonStorage) {
 
 function isEntry(value: unknown): value is DiagnosticEntry {
   if (!value || typeof value !== 'object') return false
-
   const entry = value as Partial<DiagnosticEntry>
-
   return (
     typeof entry.id === 'string' &&
     typeof entry.title === 'string' &&
@@ -44,15 +42,8 @@ function isEntry(value: unknown): value is DiagnosticEntry {
 }
 
 function normalizeState(value: unknown): DoctorState {
-  if (!value || typeof value !== 'object') {
-    return {
-      entries: [],
-      enabled: true,
-    }
-  }
-
+  if (!value || typeof value !== 'object') return { entries: [], enabled: true }
   const raw = value as Partial<DoctorState>
-
   return {
     entries: Array.isArray(raw.entries)
       ? raw.entries.filter(isEntry).slice(0, MAX_ENTRIES)
@@ -61,53 +52,37 @@ function normalizeState(value: unknown): DoctorState {
   }
 }
 
-// Used by settings.tsx while it is rendering.
 export function readState(): DoctorState {
   return normalizeState(storage?.use?.())
 }
 
-// Used by startup code, timers, and error handlers outside React rendering.
 function readCachedState(): DoctorState {
   return normalizeState(storage?.cache)
 }
 
 async function waitUntilLoaded() {
   if (!storage) return
-
   for (let waited = 0; storage.loaded === false && waited < 5000; waited += 25) {
     await new Promise(resolve => setTimeout(resolve, 25))
   }
-
-  if (storage.loaded === false) {
-    await storage.get?.()
-  }
+  if (storage.loaded === false) await storage.get?.()
 }
 
 export function saveState(next: DoctorState) {
   const job = writeQueue.then(async () => {
     if (!storage) return
-
     await waitUntilLoaded()
-
     const normalized = normalizeState(next)
-
-    // Keep the in-memory cache synchronized for non-React callers.
     storage.cache = normalized
-
     await storage.set(normalized, true)
   })
-
   writeQueue = job.catch(() => {})
   return job
 }
 
-export async function recordError(
-  error: unknown,
-  context = 'Plugin Doctor',
-) {
+export async function recordError(error: unknown, context = 'Plugin Doctor') {
   const current = readCachedState()
   const actualError = error instanceof Error ? error : new Error(String(error))
-
   const entry: DiagnosticEntry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     title: context,
@@ -117,7 +92,6 @@ export async function recordError(
     timestamp: Date.now(),
     level: 'error',
   }
-
   await saveState({
     ...current,
     entries: [entry, ...current.entries].slice(0, MAX_ENTRIES),
@@ -126,18 +100,10 @@ export async function recordError(
 
 export async function clearErrors() {
   const current = readCachedState()
-
-  await saveState({
-    ...current,
-    entries: [],
-  })
+  await saveState({ ...current, entries: [] })
 }
 
 export async function setMonitoringEnabled(enabled: boolean) {
   const current = readCachedState()
-
-  await saveState({
-    ...current,
-    enabled,
-  })
+  await saveState({ ...current, enabled })
 }
