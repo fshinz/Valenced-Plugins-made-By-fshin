@@ -1,3 +1,4 @@
+import { Page, SearchInput } from '@valenced/components'
 import { Design } from '@valenced/discord/design'
 import { Clipboard } from '@valenced/externals/react-native-clipboard'
 import { React, ReactNative } from '@valenced/react'
@@ -16,8 +17,8 @@ const h = (...args: any[]) => React.createElement(...args)
 const MAX_LOG = 100
 
 export function WatchTab() {
-  const { ScrollView, TextInput, View } = ReactNative
-  const { Button, TableRow, TableRowGroup, Text } = Design
+  const { ScrollView } = ReactNative
+  const { Button, Stack, TableRow, TableRowGroup } = Design
 
   const [storeFilter, setStoreFilter] = React.useState('')
   const [watched, setWatched] = React.useState<string[]>([])
@@ -62,58 +63,52 @@ export function WatchTab() {
 
   return h(
     ScrollView,
-    { style: { flex: 1 }, keyboardShouldPersistTaps: 'handled' },
+    { keyboardShouldPersistTaps: 'handled', contentContainerStyle: { paddingBottom: 32 } },
     h(
-      View,
-      { style: { padding: 16, gap: 16 } },
+      Page,
+      { spacing: 16 },
 
-      // ── store picker ──────────────────────────────────────────────
       h(
         TableRowGroup,
         { title: `Available stores (${allStores.length})` },
         allStores.length === 0
           ? h(TableRow, { label: 'Flux store registry not found.', subLabel: 'Stores will appear here once Valenced exposes the registry.' })
           : h(TableRow, {
-              label: showPicker ? 'Hide store list' : 'Browse & pick stores…',
+              label: showPicker ? 'Hide store list' : 'Browse & pick stores',
+              arrow: true,
               onPress: () => setShowPicker(v => !v),
             }),
       ),
 
       showPicker && allStores.length > 0
-        ? h(
-            TableRowGroup,
-            { title: 'Pick stores to watch' },
-            h(TextInput, {
-              style: {
-                padding: 10,
-                color: '#fff',
-                fontSize: 13,
-              },
-              placeholder: 'Filter…',
-              placeholderTextColor: '#666',
+        ? [
+            h(SearchInput, {
+              key: 'filter',
               value: storeFilter,
-              onChangeText: setStoreFilter,
+              onChange: setStoreFilter,
+              placeholder: 'Filter stores',
+              isClearable: true,
               autoCapitalize: 'none',
               autoCorrect: false,
             }),
-            filtered.slice(0, 80).map(name =>
-              h(TableRow, {
-                key: name,
-                label: name,
-                subLabel: watched.includes(name) ? 'Watching' : undefined,
-                onPress: () => toggle(name),
-                trailing: watched.includes(name)
-                  ? h(Text, { variant: 'text-sm/semibold', color: 'text-positive' }, '✓')
-                  : null,
-              }),
+            h(
+              TableRowGroup,
+              { key: 'picker', title: 'Pick stores to watch' },
+              filtered.slice(0, 80).map(name =>
+                h(TableRow, {
+                  key: name,
+                  label: name,
+                  trailing: watched.includes(name) ? h(TableRow.TrailingText, { text: 'Watching' }) : null,
+                  onPress: () => toggle(name),
+                }),
+              ),
+              filtered.length > 80
+                ? h(TableRow, { label: `${filtered.length - 80} more. Narrow the filter to see them.` })
+                : null,
             ),
-            filtered.length > 80
-              ? h(TableRow, { label: `… ${filtered.length - 80} more. Narrow filter to see them.` })
-              : null,
-          )
+          ]
         : null,
 
-      // ── currently watching ───────────────────────────────────────
       watched.length > 0
         ? h(
             TableRowGroup,
@@ -122,24 +117,22 @@ export function WatchTab() {
               h(TableRow, {
                 key: name,
                 label: name,
+                trailing: h(TableRow.TrailingText, { text: 'Remove' }),
                 onPress: () => toggle(name),
-                trailing: h(Text, { variant: 'text-sm/medium', color: 'text-danger' }, 'Remove'),
               }),
             ),
           )
         : null,
 
-      // ── log controls ─────────────────────────────────────────────
       log.length > 0
         ? h(
-            View,
-            { style: { flexDirection: 'row', gap: 8 } },
-            h(Button, { text: 'Copy log', variant: 'secondary', onPress: copyLog }),
-            h(Button, { text: 'Clear log', variant: 'destructive', onPress: clearLog }),
+            Stack,
+            { direction: 'horizontal', spacing: 8 },
+            h(Button, { text: 'Copy log', variant: 'secondary', grow: true, onPress: copyLog }),
+            h(Button, { text: 'Clear log', variant: 'destructive', grow: true, onPress: clearLog }),
           )
         : null,
 
-      // ── event log ────────────────────────────────────────────────
       h(
         TableRowGroup,
         { title: `Event log (${log.length}/${MAX_LOG})` },
@@ -151,18 +144,17 @@ export function WatchTab() {
               h(TableRow, {
                 key: i,
                 label: entry.storeName,
-                subLabel: expandedIdx === i
-                  ? `${new Date(entry.timestamp).toLocaleTimeString()}\n\n${entry.snapshot}`
-                  : new Date(entry.timestamp).toLocaleTimeString(),
+                subLabel:
+                  expandedIdx === i
+                    ? `${new Date(entry.timestamp).toLocaleTimeString()}\n\n${entry.snapshot}`
+                    : new Date(entry.timestamp).toLocaleTimeString(),
                 subLabelLineClamp: expandedIdx === i ? 30 : 1,
-                onPress: () => setExpandedIdx(expandedIdx === i ? null : i),
-                trailing: expandedIdx === i
-                  ? h(Text, {
-                      variant: 'text-sm/medium',
-                      color: 'text-link',
-                      onPress: (e: any) => { e?.stopPropagation?.(); Clipboard.setString(entry.snapshot) },
-                    }, 'Copy')
-                  : null,
+                trailing: expandedIdx === i ? h(TableRow.TrailingText, { text: 'Copy' }) : null,
+                onPress: () => {
+                  if (expandedIdx !== i) return setExpandedIdx(i)
+                  Clipboard.setString(entry.snapshot)
+                  setExpandedIdx(null)
+                },
               }),
             ),
       ),
