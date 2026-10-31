@@ -1,26 +1,75 @@
 import { Design } from '@valenced/discord/design'
+import { Clipboard } from '@valenced/externals/react-native-clipboard'
 import { React, ReactNative } from '@valenced/react'
 
 const h = (...args: any[]) => React.createElement(...args)
 
-// Walk a React fiber tree to find components matching a name.
-function findFibersByName(name: string, limit = 20): any[] {
-  const results: any[] = []
+type FiberInfo = {
+  name: string
+  depth: number
+  propsJson: string
+  source?: string
+}
+
+function collectFibers(filter: string, limit = 200): FiberInfo[] {
+  const results: FiberInfo[] = []
+  const lower = filter.toLowerCase()
+
+  function walk(fiber: any, depth: number) {
+    if (!fiber || depth > 80 || results.length >= limit) return
+
+    try {
+      const typeName: string =
+        fiber.type?.displayName ??
+        fiber.type?.name ??
+        fiber.elementType?.displayName ??
+        fiber.elementType?.name ??
+        ''
+
+      if (
+        typeName &&
+        typeName !== 'View' &&
+        typeName !== 'Text' &&
+        typeName !== 'RCTView' &&
+        typeName !== 'RCTText' &&
+        typeName !== 'StaticContainer' &&
+        (!filter || typeName.toLowerCase().includes(lower))
+      ) {
+        const props = fiber.memoizedProps ?? fiber.pendingProps ?? {}
+        const safe: Record<string, string> = {}
+        for (const key of Object.keys(props)) {
+          if (key === 'children') continue
+          try {
+            const val = props[key]
+            safe[key] = typeof val === 'function' ? '[fn]'
+              : typeof val === 'object' && val !== null ? JSON.stringify(val)
+              : String(val)
+          } catch { safe[key] = '(error)' }
+        }
+
+        results.push({
+          name: typeName,
+          depth,
+          propsJson: JSON.stringify(safe, null, 2),
+          source: fiber._debugSource
+            ? `${fiber._debugSource.fileName?.split('/').pop()}:${fiber._debugSource.lineNumber}`
+            : undefined,
+        })
+      }
+    } catch { /* */ }
+
+    walk(fiber.child, depth + 1)
+    walk(fiber.sibling, depth)
+  }
 
   try {
-    const g = globalThis as any
-    // React DevTools hook exposes the fiber root.
-    const hook = g.__REACT_DEVTOOLS_GLOBAL_HOOK__
+    const hook = (globalThis as any).__REACT_DEVTOOLS_GLOBAL_HOOK__
     if (!hook) return results
 
-    const renderers: Map<number, any> = hook.renderers
-    if (!renderers) return results
-
-    for (const renderer of renderers.values()) {
-      const roots = renderer.getFiberRoots?.() ?? []
-      for (const root of roots) {
-        walk(root.current, name, results, limit)
-        if (results.length >= limit) return results
+    for (const renderer of (hook.renderers ?? new Map()).values()) {
+      for (const root of (renderer.getFiberRoots?.() ?? [])) {
+        walk(root.current, 0)
+        if (results.length >= limit) break
       }
     }
   } catch { /* */ }
@@ -28,101 +77,168 @@ function findFibersByName(name: string, limit = 20): any[] {
   return results
 }
 
-function walk(fiber: any, name: string, out: any[], limit: number, depth = 0) {
-  if (!fiber || depth > 50 || out.length >= limit) return
-
-  const typeName =
-    fiber.type?.displayName ?? fiber.type?.name ?? fiber.elementType?.name ?? ''
-
-  if (typeName.toLowerCase().includes(name.toLowerCase())) {
-    out.push(fiber)
-  }
-
-  walk(fiber.child, name, out, limit, depth + 1)
-  walk(fiber.sibling, name, out, limit, depth + 1)
-}
-
-function serializeProps(props: any): string {
-  try {
-    const safe: Record<string, string> = {}
-    for (const key of Object.keys(props ?? {})) {
-      const val = props[key]
-      if (typeof val === 'function') safe[key] = '[Function]'
-      else if (typeof val === 'object' && val !== null) safe[key] = '[Object]'
-      else safe[key] = String(val)
-    }
-    return JSON.stringify(safe, null, 2)
-  } catch {
-    return '(serialization failed)'
-  }
-}
-
 export function ComponentTab() {
-  const { ScrollView, TextInput, View } = ReactNative
-  const { Button, TableRow, TableRowGroup, Text } = Design
+  const { KeyboardAvoidingView, Platform, ScrollView, TextInput, TouchableOpacity, View } = ReactNative
+  const { Button, Text } = Design
 
-  const [query, setQuery] = React.useState('')
-  const [fibers, setFibers] = React.useState<any[]>([])
-  const [searched, setSearched] = React.useState(false)
+  const [filter, setFilter] = React.useState('')
+  const [components, setComponents] = React.useState<FiberInfo[]>([])
+  const [scanned, setScanned] = React.useState(false)
+  const [expandedIdx, setExpandedIdx] = React.useState<number | null>(null)
 
-  const search = () => {
-    setFibers(findFibersByName(query.trim()))
-    setSearched(true)
+  const scan = () => {
+    setComponents(collectFibers(filter))
+    setScanned(true)
+    setExpandedIdx(null)
+  }
+
+  const copyItem = (item: FiberInfo) => {
+    Clipboard.setString(`${item.name}\n${item.propsJson}`)
   }
 
   return h(
-    ScrollView,
-    { style: { flex: 1 } },
+    KeyboardAvoidingView,
+    {
+      style: { flex: 1 },
+      behavior: Platform.OS === 'ios' ? 'padding' : 'height',
+      keyboardVerticalOffset: 120,
+    },
     h(
       View,
-      { style: { padding: 16, gap: 12 } },
-      h(Text, { variant: 'heading-md/semibold' }, 'Component Inspector'),
-      h(Text, { variant: 'text-sm/medium', color: 'text-muted' }, 'Find rendered React components by name and inspect their props.'),
+      { style: { flex: 1 } },
 
       h(
         View,
-        { style: { flexDirection: 'row', gap: 8, alignItems: 'center' } },
-        h(TextInput, {
+        {
           style: {
-            flex: 1,
-            borderWidth: 1,
-            borderColor: '#555',
-            borderRadius: 8,
-            padding: 8,
-            color: '#fff',
+            padding: 16,
+            gap: 10,
+            borderBottomWidth: 1,
+            borderBottomColor: '#2e3035',
           },
-          placeholder: 'e.g. ChannelsList',
-          placeholderTextColor: '#888',
-          value: query,
-          onChangeText: setQuery,
-          onSubmitEditing: search,
-          returnKeyType: 'search',
-        }),
-        h(Button, { text: 'Find', variant: 'primary', onPress: search }),
+        },
+        h(Text, { variant: 'heading-md/semibold' }, 'Component Inspector'),
+        h(
+          Text,
+          { variant: 'text-sm/medium', color: 'text-muted' },
+          'Walks the live React fiber tree. Tap a component to expand its props.',
+        ),
+        h(
+          View,
+          { style: { flexDirection: 'row', gap: 8, alignItems: 'center' } },
+          h(TextInput, {
+            style: {
+              flex: 1,
+              backgroundColor: '#2b2d31',
+              color: '#fff',
+              padding: 10,
+              borderRadius: 8,
+              fontSize: 13,
+            },
+            placeholder: 'Filter by name (optional)',
+            placeholderTextColor: '#666',
+            value: filter,
+            onChangeText: setFilter,
+            autoCapitalize: 'none',
+            autoCorrect: false,
+            returnKeyType: 'search',
+            onSubmitEditing: scan,
+          }),
+          h(Button, { text: 'Scan', variant: 'primary', onPress: scan }),
+        ),
+        scanned
+          ? h(
+              Text,
+              { variant: 'text-xs/medium', color: 'text-muted' },
+              `${components.length} component${components.length === 1 ? '' : 's'} found`,
+            )
+          : null,
       ),
 
-      searched && fibers.length === 0
-        ? h(
-            Text,
-            { variant: 'text-md/medium', color: 'text-muted' },
-            'No matching components found in the current React tree. Make sure the view is rendered.',
-          )
-        : null,
+      h(
+        ScrollView,
+        { style: { flex: 1 }, keyboardShouldPersistTaps: 'handled' },
 
-      fibers.length > 0
-        ? h(
-            TableRowGroup,
-            { title: `Matches (${fibers.length})` },
-            fibers.map((fiber, i) =>
-              h(TableRow, {
-                key: i,
-                label: fiber.type?.displayName ?? fiber.type?.name ?? '(anonymous)',
-                subLabel: serializeProps(fiber.memoizedProps),
-                subLabelLineClamp: 6,
-              }),
-            ),
-          )
-        : null,
+        !scanned
+          ? h(
+              View,
+              { style: { padding: 32, alignItems: 'center' } },
+              h(
+                Text,
+                { variant: 'text-sm/medium', color: 'text-muted', style: { textAlign: 'center' } },
+                'Hit Scan to walk the current React tree.',
+              ),
+            )
+          : components.length === 0
+            ? h(
+                View,
+                { style: { padding: 32, alignItems: 'center' } },
+                h(
+                  Text,
+                  { variant: 'text-sm/medium', color: 'text-muted', style: { textAlign: 'center' } },
+                  filter
+                    ? `No components matched "${filter}".`
+                    : 'React DevTools hook not found or tree is empty.',
+                ),
+              )
+            : components.map((item, i) =>
+                h(
+                  TouchableOpacity,
+                  {
+                    key: i,
+                    onPress: () => setExpandedIdx(expandedIdx === i ? null : i),
+                    style: {
+                      borderBottomWidth: 1,
+                      borderBottomColor: '#2e303566',
+                      padding: 12,
+                      paddingLeft: 12 + item.depth * 4,
+                    },
+                  },
+                  h(
+                    View,
+                    { style: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' } },
+                    h(
+                      View,
+                      { style: { flex: 1 } },
+                      h(Text, { variant: 'text-sm/semibold', color: 'text-link' }, item.name),
+                      item.source
+                        ? h(Text, { variant: 'text-xs/medium', color: 'text-muted' }, item.source)
+                        : null,
+                    ),
+                    expandedIdx === i
+                      ? h(
+                          Text,
+                          {
+                            variant: 'text-xs/medium',
+                            color: 'text-link',
+                            onPress: (e: any) => { e.stopPropagation?.(); copyItem(item) },
+                            style: { paddingLeft: 8 },
+                          },
+                          'Copy',
+                        )
+                      : null,
+                  ),
+                  expandedIdx === i
+                    ? h(
+                        Text,
+                        {
+                          selectable: true,
+                          variant: 'text-xs/normal',
+                          style: {
+                            fontFamily: 'monospace',
+                            color: '#3fb950',
+                            lineHeight: 16,
+                            marginTop: 8,
+                          },
+                        },
+                        item.propsJson === '{}'
+                          ? '(no props)'
+                          : item.propsJson,
+                      )
+                    : null,
+                ),
+              ),
+      ),
     ),
   )
 }
