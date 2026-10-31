@@ -208,7 +208,7 @@
       "description": "Diagnostics and compatibility tools for Valenced plugin developers",
       "author": "shin <1381008677301129257> (https://github.com/fshinz/Valenced-Plugins-made-By-fshin)",
       "channels": {
-        "latest": "1.0.5"
+        "latest": "1.0.6"
       },
       "versions": {
         "1.0.0": {
@@ -280,6 +280,19 @@
           "url": "https://fshinz.github.io/Valenced-Plugins-made-By-fshin/pool/shin.plugin-doctor@1.0.5.zip",
           "sha256": "f7bfd8a325a972a05322d5bed6718e7a26b9814d41040dcf8f01fde93eeb22fe",
           "size": 7539,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        },
+        "1.0.6": {
+          "url": "https://fshinz.github.io/Valenced-Plugins-made-By-fshin/pool/shin.plugin-doctor@1.0.6.zip",
+          "sha256": "2f95e45001e5d5d3546f7d60f6e7e30c5e11036f0adfe8ecd0cd4f08e29bc34d",
+          "size": 6692,
           "dependencies": {
             "valenced.api": {
               "version": ">=1 <2"
