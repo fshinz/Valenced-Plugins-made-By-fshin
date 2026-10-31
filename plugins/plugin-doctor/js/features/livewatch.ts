@@ -1,302 +1,354 @@
-type AnyRecord = Record<string, any>;
+type StoreMap = Record<string, any>;
+type WatchListener = (storeName: string, snapshot: unknown) => void;
 
-type StoreListener = (name: string, state: unknown) => void;
+type WatchEntry = {
+	storeName: string;
+	interval: ReturnType<typeof setInterval>;
+	listeners: Set<WatchListener>;
+	lastSnapshot: string;
+};
 
-const listeners = new Set<StoreListener>();
+const watches = new Map<string, WatchEntry>();
+const globalListeners = new Set<WatchListener>();
 
-const subscriptions = new Map<
-  string,
-  {
-    store: AnyRecord;
-    handler: (...args: any[]) => void;
-  }
->();
+const SENSITIVE_KEY =
+	/(token|authorization|password|secret|cookie|session.?id|api.?key|credential)/i;
 
-function getRuntime(): AnyRecord {
-  return globalThis as unknown as AnyRecord;
-}
+const MAX_DEPTH = 5;
+const MAX_ARRAY_ITEMS = 50;
+const MAX_OBJECT_KEYS = 100;
+const WATCH_INTERVAL = 1000;
 
-function getFluxRegistry(): AnyRecord | null {
-  const g = getRuntime();
+function getStores(): StoreMap {
+	try {
+		const root = (globalThis as any).valenced;
+		const stores = root?.discord?.flux?.Stores;
 
-  const candidates = [
-    g.valenced?.discord?.flux?.Stores,
-    g.__valenced?.discord?.flux?.Stores,
-    g.__valenced?.stores,
-    g.__valenced?.flux?._stores,
-    g.__valenced?.flux?.stores,
-    g.Flux?._stores,
-    g.Flux?.stores,
-    g.__flux?._stores,
-    g.__flux?.stores,
-  ];
-
-  for (const candidate of candidates) {
-    if (
-      candidate &&
-      typeof candidate === "object" &&
-      !Array.isArray(candidate)
-    ) {
-      return candidate;
-    }
-  }
-
-  return null;
+		return stores && typeof stores === "object" ? stores : {};
+	} catch {
+		return {};
+	}
 }
 
 export function getAllStoreNames(): string[] {
-  const registry = getFluxRegistry();
-
-  if (!registry) {
-    return [];
-  }
-
-  return Object.keys(registry).sort();
+	return Object.keys(getStores()).sort((a, b) => a.localeCompare(b));
 }
 
-export function getStore(name: string): AnyRecord | null {
-  const registry = getFluxRegistry();
-
-  if (!registry || !name) {
-    return null;
-  }
-
-  const store = registry[name];
-
-  if (!store || typeof store !== "object") {
-    return null;
-  }
-
-  return store;
+export function getStore(storeName: string): any {
+	return getStores()[storeName];
 }
 
-function redact(
-  value: unknown,
-  depth = 0,
-  seen = new WeakSet<object>(),
-): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
+function sanitize(
+	value: any,
+	depth = 0,
+	seen = new WeakSet<object>(),
+): any {
+	if (value === null || value === undefined) {
+		return value;
+	}
 
-  if (typeof value === "string") {
-    return value.length > 2000
-      ? `${value.slice(0, 2000)}… [truncated]`
-      : value;
-  }
+	if (typeof value === "string") {
+		return value.length > 10_000
+			? `${value.slice(0, 10_000)}… [truncated]`
+			: value;
+	}
 
-  if (
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
+	if (
+		typeof value === "number" ||
+		typeof value === "boolean"
+	) {
+		return value;
+	}
 
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
+	if (typeof value === "bigint") {
+		return `${value.toString()}n`;
+	}
 
-  if (typeof value === "function") {
-    return `[Function ${value.name || "anonymous"}]`;
-  }
+	if (typeof value === "function") {
+		return `[Function ${value.name || "anonymous"}]`;
+	}
 
-  if (typeof value !== "object") {
-    return String(value);
-  }
+	if (typeof value !== "object") {
+		return String(value);
+	}
 
-  if (depth >= 5) {
-    return "[Max depth reached]";
-  }
+	if (depth >= MAX_DEPTH) {
+		return "[Max depth reached]";
+	}
 
-  if (seen.has(value)) {
-    return "[Circular]";
-  }
+	if (seen.has(value)) {
+		return "[Circular reference]";
+	}
 
-  seen.add(value);
+	seen.add(value);
 
-  if (Array.isArray(value)) {
-    return value
-      .slice(0, 100)
-      .map((item) => redact(item, depth + 1, seen));
-  }
+	try {
+		if (Array.isArray(value)) {
+			return value
+				.slice(0, MAX_ARRAY_ITEMS)
+				.map((item) => sanitize(item, depth + 1, seen));
+		}
 
-  const output: AnyRecord = {};
+		const result: Record<string, any> = {};
+		let keys: string[];
 
-  for (const key of Object.keys(value as AnyRecord).slice(0, 100)) {
-    if (
-      /token|password|credential|secret|authorization|cookie|session.?id|fingerprint|private.?key/i.test(
-        key,
-      )
-    ) {
-      output[key] = "[REDACTED]";
-      continue;
-    }
+		try {
+			keys = Object.keys(value).slice(0, MAX_OBJECT_KEYS);
+		} catch {
+			return "[Unable to inspect object]";
+		}
 
-    try {
-      output[key] = redact(
-        (value as AnyRecord)[key],
-        depth + 1,
-        seen,
-      );
-    } catch {
-      output[key] = "[Unreadable]";
-    }
-  }
+		for (const key of keys) {
+			if (SENSITIVE_KEY.test(key)) {
+				result[key] = "[REDACTED]";
+				continue;
+			}
 
-  return output;
+			try {
+				result[key] = sanitize(value[key], depth + 1, seen);
+			} catch {
+				result[key] = "[Unable to read property]";
+			}
+		}
+
+		if (Object.keys(value).length > MAX_OBJECT_KEYS) {
+			result["…"] = "[Additional properties omitted]";
+		}
+
+		return result;
+	} finally {
+		seen.delete(value);
+	}
 }
 
-export function snapshotStore(name: string): unknown {
-  const store = getStore(name);
-
-  if (!store) {
-    return {
-      error: `Store "${name}" was not found.`,
-    };
-  }
-
-  try {
-    if (typeof store.getState === "function") {
-      return redact(store.getState());
-    }
-
-    const snapshot: AnyRecord = {};
-
-    for (const key of Object.keys(store).slice(0, 100)) {
-      if (
-        /token|password|credential|secret|authorization|cookie|session.?id|fingerprint|private.?key/i.test(
-          key,
-        )
-      ) {
-        snapshot[key] = "[REDACTED]";
-        continue;
-      }
-
-      try {
-        const value = store[key];
-
-        if (typeof value !== "function") {
-          snapshot[key] = value;
-        }
-      } catch {
-        snapshot[key] = "[Unreadable]";
-      }
-    }
-
-    return redact(snapshot);
-  } catch (error) {
-    return {
-      error:
-        error instanceof Error
-          ? error.message
-          : String(error),
-    };
-  }
+function safeCall<T>(callback: () => T): T | undefined {
+	try {
+		return callback();
+	} catch {
+		return undefined;
+	}
 }
 
-export function getStoreSnapshot(name: string): unknown {
-  return snapshotStore(name);
+export function snapshotStore(storeName: string): unknown {
+	const store = getStore(storeName);
+
+	if (!store) {
+		return {
+			error: `Store "${storeName}" was not found.`,
+		};
+	}
+
+	const snapshot: Record<string, any> = {
+		name: storeName,
+		type: typeof store,
+	};
+
+	const ownProperties = safeCall(() => Object.keys(store)) ?? [];
+
+	snapshot.properties = {};
+
+	for (const key of ownProperties.slice(0, MAX_OBJECT_KEYS)) {
+		if (SENSITIVE_KEY.test(key)) {
+			snapshot.properties[key] = "[REDACTED]";
+			continue;
+		}
+
+		const value = safeCall(() => store[key]);
+
+		if (typeof value === "function") {
+			snapshot.properties[key] = `[Function ${value.name || key}]`;
+		} else {
+			snapshot.properties[key] = sanitize(value);
+		}
+	}
+
+	if (ownProperties.length > MAX_OBJECT_KEYS) {
+		snapshot.properties["…"] = "[Additional properties omitted]";
+	}
+
+	const methods = ownProperties.filter(
+		(key) => typeof safeCall(() => store[key]) === "function",
+	);
+
+	snapshot.methods = methods;
+
+	/*
+	 * Only call a small set of conventional, zero-argument getters.
+	 * Never invoke arbitrary store methods automatically.
+	 */
+	const knownGetters = [
+		"getCurrentUser",
+		"getCurrentUserId",
+		"getChannelId",
+		"getGuildId",
+		"getSelectedChannelId",
+		"getSelectedGuildId",
+		"getGuilds",
+		"getChannels",
+	];
+
+	snapshot.getters = {};
+
+	for (const getterName of knownGetters) {
+		if (typeof safeCall(() => store[getterName]) !== "function") {
+			continue;
+		}
+
+		const result = safeCall(() => store[getterName]());
+
+		/*
+		 * Avoid exposing authentication-related store contents.
+		 * User and channel data are sanitized, but can still be personal.
+		 */
+		if (SENSITIVE_KEY.test(storeName)) {
+			snapshot.getters[getterName] = "[REDACTED]";
+		} else {
+			snapshot.getters[getterName] = sanitize(result);
+		}
+	}
+
+	return snapshot;
 }
 
-export function watchStore(name: string): boolean {
-  if (subscriptions.has(name)) {
-    return true;
-  }
-
-  const store = getStore(name);
-
-  if (!store) {
-    return false;
-  }
-
-  const addListener = store.addChangeListener;
-  const removeListener = store.removeChangeListener;
-
-  if (
-    typeof addListener !== "function" ||
-    typeof removeListener !== "function"
-  ) {
-    return false;
-  }
-
-  const handler = () => {
-    const snapshot = snapshotStore(name);
-
-    for (const listener of listeners) {
-      try {
-        listener(name, snapshot);
-      } catch (error) {
-        console.error("[Plugin Doctor] Store listener failed:", error);
-      }
-    }
-  };
-
-  try {
-    addListener.call(store, handler);
-
-    subscriptions.set(name, {
-      store,
-      handler,
-    });
-
-    // Emit an initial snapshot so the UI doesn't have to wait
-    // for the next store update.
-    handler();
-
-    return true;
-  } catch (error) {
-    console.error(
-      `[Plugin Doctor] Failed to watch store "${name}":`,
-      error,
-    );
-
-    return false;
-  }
+export function getStoreSnapshot(storeName: string): unknown {
+	return snapshotStore(storeName);
 }
 
-export function unwatchStore(name: string): void {
-  const subscription = subscriptions.get(name);
-
-  if (!subscription) {
-    return;
-  }
-
-  try {
-    const removeListener =
-      subscription.store.removeChangeListener;
-
-    if (typeof removeListener === "function") {
-      removeListener.call(
-        subscription.store,
-        subscription.handler,
-      );
-    }
-  } catch (error) {
-    console.error(
-      `[Plugin Doctor] Failed to unwatch store "${name}":`,
-      error,
-    );
-  } finally {
-    subscriptions.delete(name);
-  }
+function serializeSnapshot(snapshot: unknown): string {
+	try {
+		return JSON.stringify(snapshot);
+	} catch {
+		return String(snapshot);
+	}
 }
 
-export function getWatchedStores(): string[] {
-  return [...subscriptions.keys()];
+function notifyListeners(
+	storeName: string,
+	snapshot: unknown,
+	listeners: Iterable<WatchListener>,
+): void {
+	for (const listener of listeners) {
+		try {
+			listener(storeName, snapshot);
+		} catch (error) {
+			console.error("[Plugin Doctor] Watch listener failed:", error);
+		}
+	}
 }
 
-export function clearAllWatches(): void {
-  for (const name of [...subscriptions.keys()]) {
-    unwatchStore(name);
-  }
+/**
+ * Register a listener for store-watch updates.
+ * Returns an unsubscribe function.
+ *
+ * Callback signature: (storeName, snapshot) => void
+ */
+export function addWatchListener(
+	listener: WatchListener,
+): () => void {
+	globalListeners.add(listener);
+
+	return () => {
+		globalListeners.delete(listener);
+
+		for (const entry of watches.values()) {
+			entry.listeners.delete(listener);
+		}
+	};
 }
 
 export function subscribeToStoreChanges(
-  listener: StoreListener,
+	storeName: string,
+	listener: WatchListener,
 ): () => void {
-  listeners.add(listener);
+	const unsubscribeGlobal = addWatchListener(listener);
 
-  return () => {
-    listeners.delete(listener);
-  };
+	const entry = watches.get(storeName);
+
+	if (entry) {
+		entry.listeners.add(listener);
+	}
+
+	return () => {
+		unsubscribeGlobal();
+
+		const currentEntry = watches.get(storeName);
+		currentEntry?.listeners.delete(listener);
+	};
+}
+
+export function watchStore(
+	storeName: string,
+	listener?: WatchListener,
+): boolean {
+	if (!getStore(storeName)) {
+		return false;
+	}
+
+	let entry = watches.get(storeName);
+
+	if (!entry) {
+		const initialSnapshot = snapshotStore(storeName);
+
+		entry = {
+			storeName,
+			interval: setInterval(() => {
+				const current = watches.get(storeName);
+
+				if (!current) {
+					return;
+				}
+
+				const snapshot = snapshotStore(storeName);
+				const serialized = serializeSnapshot(snapshot);
+
+				if (serialized === current.lastSnapshot) {
+					return;
+				}
+
+				current.lastSnapshot = serialized;
+
+				notifyListeners(
+					storeName,
+					snapshot,
+					[...globalListeners, ...current.listeners],
+				);
+			}, WATCH_INTERVAL),
+			listeners: new Set<WatchListener>(),
+			lastSnapshot: serializeSnapshot(initialSnapshot),
+		};
+
+		watches.set(storeName, entry);
+	}
+
+	if (listener) {
+		entry.listeners.add(listener);
+	}
+
+	return true;
+}
+
+export function unwatchStore(storeName: string): boolean {
+	const entry = watches.get(storeName);
+
+	if (!entry) {
+		return false;
+	}
+
+	clearInterval(entry.interval);
+	watches.delete(storeName);
+
+	return true;
+}
+
+export function getWatchedStores(): string[] {
+	return [...watches.keys()].sort((a, b) => a.localeCompare(b));
+}
+
+export function clearAllWatches(): void {
+	for (const entry of watches.values()) {
+		clearInterval(entry.interval);
+	}
+
+	watches.clear();
+	globalListeners.clear();
 }
