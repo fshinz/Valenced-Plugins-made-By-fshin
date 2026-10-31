@@ -1,4 +1,5 @@
 import { React } from '@valenced/react'
+import { setPluginApi } from './api'
 import { PluginDoctorSettings } from './settings'
 import { bindStorage, recordError } from './storage'
 
@@ -15,36 +16,36 @@ export default plugin({
 
   start({ cleanup, plugin: pluginSelf, jsonStorage, logger }) {
     bindStorage(jsonStorage)
+    setPluginApi(pluginSelf as any)
 
     const report = (error: unknown, context = 'Plugin Doctor') => {
       recordError(error, context).catch(() => {})
     }
 
-    // Expose a reportError hook for other plugins to use.
     try {
-      (pluginSelf as any).reportError = (error: unknown) => {
+      ;(pluginSelf as any).reportError = (error: unknown) => {
         report(error, 'Reported plugin error')
       }
     } catch (error) {
       report(error, 'Failed to register error reporter')
     }
 
-    // Global unhandled error capture.
     const origHandler = (globalThis as any).ErrorUtils?.getGlobalHandler?.()
     try {
-      (globalThis as any).ErrorUtils?.setGlobalHandler?.((error: Error, isFatal: boolean) => {
-        report(error, isFatal ? 'Fatal error' : 'Unhandled error')
-        origHandler?.(error, isFatal)
-      })
+      ;(globalThis as any).ErrorUtils?.setGlobalHandler?.(
+        (error: Error, isFatal: boolean) => {
+          report(error, isFatal ? 'Fatal error' : 'Unhandled error')
+          origHandler?.(error, isFatal)
+        },
+      )
     } catch (e) {
       report(e, 'Failed to install global error handler')
     }
 
     cleanup(() => {
-      // Restore original handler on unload.
       try {
         if (origHandler) {
-          (globalThis as any).ErrorUtils?.setGlobalHandler?.(origHandler)
+          ;(globalThis as any).ErrorUtils?.setGlobalHandler?.(origHandler)
         }
       } catch { /* */ }
     })
