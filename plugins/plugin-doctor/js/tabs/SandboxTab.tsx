@@ -4,8 +4,6 @@ import { React, ReactNative } from '@valenced/react'
 
 const h = (...args: any[]) => React.createElement(...args)
 
-// Build a flat context object of everything we want available in snippets.
-// We inject them as named closure params — no `require` needed.
 function buildContext(): Record<string, unknown> {
   const ctx: Record<string, unknown> = {}
 
@@ -28,7 +26,6 @@ function buildContext(): Record<string, unknown> {
   const clip = tryGet('@valenced/externals/react-native-clipboard')
   if (clip) ctx.Clipboard = clip.Clipboard ?? clip
 
-  // Expose the Flux store getter directly.
   const flux = (globalThis as any).__valenced?.flux
   if (flux) {
     ctx.Flux = flux
@@ -58,7 +55,7 @@ function runSandbox(code: string): SandboxResult {
     // eslint-disable-next-line no-new-func
     const fn = new Function(
       ...keys,
-      `"use strict"; try { const __r = (function(){ ${code} })(); if(__r instanceof Promise){ return __r.then(v => String(v ?? 'undefined')); } return String(__r ?? 'undefined'); } catch(e){ throw e; }`,
+      `"use strict"; try { const __r = (function(){ ${code} })(); if(__r && typeof __r.then === 'function'){ return __r.then(function(v){ return String(v == null ? 'undefined' : v); }); } return String(__r == null ? 'undefined' : __r); } catch(e){ throw e; }`,
     )
 
     const raw = fn(...vals)
@@ -80,7 +77,6 @@ function runSandbox(code: string): SandboxResult {
   }
 }
 
-// Hermes doesn't support async/await in new Function — strip `await` from examples.
 const EXAMPLES = [
   {
     label: 'List Design keys',
@@ -88,15 +84,15 @@ const EXAMPLES = [
   },
   {
     label: 'Find module by prop',
-    code: `getModules(withProps('getChannel'), m => log(m))\nreturn 'check console'`,
+    code: `getModules(withProps('getChannel'), function(m){ log(m) })\nreturn 'check console'`,
   },
   {
-    label: 'List watched stores',
+    label: 'List all store names',
     code: `return Object.keys(Flux?._stores ?? Flux?.stores ?? {}).join(', ')`,
   },
   {
     label: 'Get guild count',
-    code: `const gs = getStore?.('GuildStore')\nreturn gs ? Object.keys(gs.getGuilds?.() ?? {}).length + ' guilds' : 'GuildStore not found'`,
+    code: `var gs = getStore('GuildStore')\nreturn gs ? Object.keys(gs.getGuilds?.() ?? {}).length + ' guilds' : 'GuildStore not found'`,
   },
 ]
 
@@ -147,7 +143,6 @@ export function SandboxTab() {
           ),
         ),
 
-        // Code input
         h(
           View,
           {
@@ -161,7 +156,16 @@ export function SandboxTab() {
           },
           h(
             View,
-            { style: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4 } },
+            {
+              style: {
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                paddingHorizontal: 12,
+                paddingTop: 8,
+                paddingBottom: 4,
+              },
+            },
             h(Text, { variant: 'text-xs/semibold', color: 'text-muted' }, 'SNIPPET'),
             code.length > 0
               ? h(
@@ -205,7 +209,7 @@ export function SandboxTab() {
           onPress: run,
         }),
 
-        result
+        result != null
           ? h(
               View,
               {
@@ -232,7 +236,10 @@ export function SandboxTab() {
                 },
                 h(
                   Text,
-                  { variant: 'text-sm/semibold', color: result.ok ? 'text-positive' : 'text-danger' },
+                  {
+                    variant: 'text-sm/semibold',
+                    color: result.ok ? 'text-positive' : 'text-danger',
+                  },
                   result.ok ? `✓ OK  ·  ${result.duration}ms` : `✗ Error  ·  ${result.duration}ms`,
                 ),
                 h(
@@ -251,3 +258,13 @@ export function SandboxTab() {
                   textAlignVertical: 'top',
                 },
                 multiline: true,
+                scrollEnabled: false,
+                editable: false,
+                value: result.ok ? (result.value ?? '') : (result.error ?? ''),
+              }),
+            )
+          : null,
+      ),
+    ),
+  )
+}
