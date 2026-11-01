@@ -1,320 +1,257 @@
-import { Page } from '@valenced/components'
 import { Design } from '@valenced/discord/design'
 import { nodeUtil } from '@valenced/externals/browserify'
-import { getErrorStack } from '@valenced/utils/error'
-import { React, ReactNative } from '@valenced/react'
 import { Clipboard } from '@valenced/externals/react-native-clipboard'
+import { React, ReactNative } from '@valenced/react'
+import { getErrorStack } from '@valenced/utils/error'
 import { pluginApi } from '../api'
+import { TabScreen } from '../components/TabScreen'
 
-const h = (...args: any[]) => React.createElement(...args)
-const { Button, Card, Stack, TableRow, TableRowGroup, TableSwitchRow, Text, TextArea } = Design
+const {
+	Button,
+	Card,
+	Stack,
+	TableRow,
+	TableRowGroup,
+	TableSwitchRow,
+	Text,
+	TextArea,
+} = Design
 
 const MAX_HISTORY = 30
 
 type HistoryEntry = {
-  id: number
-  code: string
-  result: string
-  ok: boolean
-  ts: number
+	id: number
+	code: string
+	result: string
+	ok: boolean
+	ts: number
 }
 
-let historyId = 0
-let sharedHistory: HistoryEntry[] = []
-
-const historyListeners = new Set<(entries: HistoryEntry[]) => void>()
-
-function publishHistory(entry: HistoryEntry) {
-  sharedHistory = [entry, ...sharedHistory].slice(0, MAX_HISTORY)
-
-  for (const listener of [...historyListeners]) {
-    try {
-      listener(sharedHistory)
-    } catch {
-      // Ignore listener errors.
-    }
-  }
-}
-
-const AsyncFunction = Object.getPrototypeOf(
-  async function () {},
-).constructor as new (...args: string[]) => (...args: any[]) => Promise<any>
+type HistoryListener = (entries: HistoryEntry[]) => void
 
 const QUICK_ACTIONS = [
-  {
-    label: 'List Flux stores',
-    code: 'return Object.keys(valenced?.discord?.flux?.Stores ?? {}).sort()',
-  },
-  {
-    label: 'Selected channel ID',
-    code: 'return valenced?.discord?.flux?.Stores?.SelectedChannelStore?.getChannelId?.() ?? null',
-  },
-  {
-    label: 'Selected guild ID',
-    code: 'return valenced?.discord?.flux?.Stores?.SelectedGuildStore?.getGuildId?.() ?? null',
-  },
-  {
-    label: 'Plugin API keys',
-    code: 'return Object.keys(api ?? {}).sort()',
-  },
+	{
+		label: 'List Flux stores',
+		code: 'return Object.keys(valenced?.discord?.flux?.Stores ?? {}).sort()',
+	},
+	{
+		label: 'Selected channel ID',
+		code: 'return valenced?.discord?.flux?.Stores?.SelectedChannelStore?.getChannelId?.() ?? null',
+	},
+	{
+		label: 'Selected guild ID',
+		code: 'return valenced?.discord?.flux?.Stores?.SelectedGuildStore?.getGuildId?.() ?? null',
+	},
+	{
+		label: 'Plugin API keys',
+		code: 'return Object.keys(api ?? {}).sort()',
+	},
 ]
 
+// Lets snippets use top-level await.
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+	...args: string[]
+) => (...args: any[]) => Promise<any>
+
+// History is module-level so it survives leaving the DevLab screen.
+let history: HistoryEntry[] = []
+let nextHistoryId = 0
+const historyListeners = new Set<HistoryListener>()
+
+function setHistory(entries: HistoryEntry[]) {
+	history = entries
+	for (const listener of [...historyListeners]) listener(history)
+}
+
+function addToHistory(code: string, result: string, ok: boolean) {
+	const entry = { id: nextHistoryId++, code, result, ok, ts: Date.now() }
+	setHistory([entry, ...history].slice(0, MAX_HISTORY))
+}
+
 export function SandboxTab() {
-  const { ScrollView } = ReactNative
+	const { ScrollView } = ReactNative
 
-  const codeRef = React.useRef('')
-  const [code, setCode] = React.useState('')
-  const [result, setResult] = React.useState('')
-  const [resultOk, setResultOk] = React.useState(true)
-  const [wordWrap, setWordWrap] = React.useState(true)
-  const [running, setRunning] = React.useState(false)
-  const [history, setHistory] = React.useState<HistoryEntry[]>(() => sharedHistory)
+	// The ref keeps Run reading the latest text even when pressed mid-edit.
+	const codeRef = React.useRef('')
+	const [code, setCode] = React.useState('')
+	const [result, setResult] = React.useState('')
+	const [resultOk, setResultOk] = React.useState(true)
+	const [wordWrap, setWordWrap] = React.useState(true)
+	const [running, setRunning] = React.useState(false)
+	const [entries, setEntries] = React.useState(history)
 
-  React.useEffect(() => {
-    const listener = (entries: HistoryEntry[]) => {
-      setHistory(entries)
-    }
+	React.useEffect(() => {
+		historyListeners.add(setEntries)
+		setEntries(history)
+		return () => {
+			historyListeners.delete(setEntries)
+		}
+	}, [])
 
-    historyListeners.add(listener)
-    setHistory(sharedHistory)
+	const loadCode = (value: string) => {
+		codeRef.current = value
+		setCode(value)
+	}
 
-    return () => {
-      historyListeners.delete(listener)
-    }
-  }, [])
+	const run = async () => {
+		const source = codeRef.current.trim()
+		if (!source || running) return
 
-  const addHistory = (code: string, output: string, ok: boolean) => {
-    publishHistory({
-      id: historyId++,
-      code,
-      result: output,
-      ok,
-      ts: Date.now(),
-    })
-  }
+		codeRef.current = source
+		setRunning(true)
 
-  const run = async (override?: string) => {
-    const source = (override ?? codeRef.current).trim()
+		try {
+			if (!pluginApi) {
+				throw new Error(
+					'DevLab plugin API is not available. Try reloading the plugin.',
+				)
+			}
 
-    if (!source || running) return
+			const execute = new AsyncFunction(
+				'api',
+				'valenced',
+				`"use strict";\n${source}\n//# sourceURL=Valenced:DevLab:Sandbox`,
+			)
+			const value = await execute(pluginApi, (globalThis as any).valenced)
 
-    codeRef.current = source
-    setRunning(true)
+			const output =
+				value === undefined
+					? 'undefined'
+					: nodeUtil.inspect(value, {
+							depth: 4,
+							showHidden: false,
+							maxArrayLength: 100,
+							maxStringLength: 10000,
+						})
 
-    try {
-      if (!pluginApi) {
-        throw new Error(
-          'DevLab plugin API is not available. Try reloading the plugin.',
-        )
-      }
+			setResult(output)
+			setResultOk(true)
+			addToHistory(source, output, true)
+		} catch (error) {
+			const stack = getErrorStack(error)
+			setResult(stack)
+			setResultOk(false)
+			addToHistory(source, stack, false)
+		} finally {
+			setRunning(false)
+		}
+	}
 
-      const runtime = (globalThis as any).valenced
+	const handleClear = () => {
+		loadCode('')
+		setResult('')
+		setResultOk(true)
+	}
 
-      // The AsyncFunction constructor allows top-level await.
-      // Promises are awaited automatically.
-      const execute = new AsyncFunction(
-        'api',
-        'valenced',
-        `"use strict";\n${source}\n//# sourceURL=Valenced:DevLab:Sandbox`,
-      )
+	return (
+		<TabScreen>
+			<TextArea
+				autoFocus={false}
+				label="JavaScript"
+				value={code}
+				onChange={(value: string) => loadCode(value)}
+				placeholder={
+					'return Object.keys(valenced.discord.flux.Stores)\n\n// Async works automatically:\nreturn await Promise.resolve("hello")'
+				}
+				size="md"
+			/>
 
-      const value = await execute(pluginApi, runtime)
+			<TableRowGroup title="Quick actions">
+				{QUICK_ACTIONS.map(action => (
+					<TableRow
+						key={action.label}
+						label={action.label}
+						trailing={<TableRow.TrailingText text="Load" />}
+						onPress={() => {
+							loadCode(action.code)
+							setResult(`Loaded: ${action.label}\nPress Run to execute.`)
+							setResultOk(true)
+						}}
+					/>
+				))}
+			</TableRowGroup>
 
-      const inspected =
-        value === undefined
-          ? 'undefined'
-          : nodeUtil.inspect(value, {
-              depth: 4,
-              showHidden: false,
-              maxArrayLength: 100,
-              maxStringLength: 10000,
-            })
+			<Stack direction="horizontal" spacing={8}>
+				<Button
+					text={running ? 'Running…' : 'Run'}
+					variant="primary"
+					grow
+					disabled={running}
+					onPress={run}
+				/>
+				<Button text="Clear" variant="secondary" onPress={handleClear} />
+			</Stack>
 
-      setResult(inspected)
-      setResultOk(true)
-      addHistory(source, inspected, true)
-    } catch (error) {
-      const stack = getErrorStack(error)
+			<TableRowGroup title="Output options">
+				<TableSwitchRow
+					label="Word wrap"
+					subLabel="Wrap long output lines."
+					value={wordWrap}
+					onValueChange={setWordWrap}
+				/>
+			</TableRowGroup>
 
-      setResult(stack)
-      setResultOk(false)
-      addHistory(source, stack, false)
-    } finally {
-      setRunning(false)
-    }
-  }
+			<Stack spacing={8}>
+				<Text
+					variant="heading-sm/semibold"
+					color={resultOk ? 'text-strong' : 'text-danger'}
+				>
+					{resultOk ? 'Result' : 'Error'}
+				</Text>
 
-  return h(
-    ScrollView,
-    {
-      keyboardShouldPersistTaps: 'handled',
-      contentContainerStyle: { paddingBottom: 32 },
-    },
-    h(
-      Page,
-      { spacing: 16 },
+				<Card>
+					<ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
+						<ScrollView nestedScrollEnabled horizontal={!wordWrap}>
+							<Text selectable style={{ fontFamily: 'monospace' }}>
+								{result || 'Run code to see its output.'}
+							</Text>
+						</ScrollView>
+					</ScrollView>
+				</Card>
 
-      h(TextArea, {
-        autoFocus: false,
-        label: 'JavaScript',
-        value: code,
-        onChange: (value: string) => {
-          codeRef.current = value
-          setCode(value)
-        },
-        placeholder:
-          'return Object.keys(valenced.discord.flux.Stores)\n\n// Async works automatically:\nreturn await Promise.resolve("hello")',
-        size: 'md',
-      }),
+				{result && (
+					<Button
+						text="Copy result"
+						variant="secondary"
+						onPress={() => Clipboard.setString(result)}
+					/>
+				)}
+			</Stack>
 
-      h(
-        TableRowGroup,
-        { title: 'Quick actions' },
-        QUICK_ACTIONS.map((action) =>
-          h(TableRow, {
-            key: action.label,
-            label: action.label,
-            trailing: h(TableRow.TrailingText, { text: 'Load' }),
-            onPress: () => {
-              codeRef.current = action.code
-              setCode(action.code)
-              setResult(`Loaded: ${action.label}\nPress Run to execute.`)
-              setResultOk(true)
-            },
-          }),
-        ),
-      ),
+			<TableRowGroup title={`History (${entries.length}/${MAX_HISTORY})`}>
+				{entries.length === 0 ? (
+					<TableRow
+						label="No runs yet."
+						subLabel="Recent results stay available when you navigate away from DevLab."
+					/>
+				) : (
+					entries.map(entry => (
+						<TableRow
+							key={entry.id}
+							label={
+								entry.code.length > 64
+									? `${entry.code.slice(0, 64)}…`
+									: entry.code
+							}
+							subLabel={`${new Date(entry.ts).toLocaleTimeString()} · ${entry.ok ? 'Success' : 'Error'} · ${entry.result.slice(0, 90)}`}
+							subLabelLineClamp={2}
+							onPress={() => {
+								loadCode(entry.code)
+								setResult(entry.result)
+								setResultOk(entry.ok)
+							}}
+						/>
+					))
+				)}
+			</TableRowGroup>
 
-      h(
-        Stack,
-        { direction: 'horizontal', spacing: 8 },
-        h(Button, {
-          text: running ? 'Running…' : 'Run',
-          variant: 'primary',
-          grow: true,
-          disabled: running,
-          onPress: () => run(),
-        }),
-        h(Button, {
-          text: 'Clear',
-          variant: 'secondary',
-          onPress: () => {
-            codeRef.current = ''
-            setCode('')
-            setResult('')
-            setResultOk(true)
-          },
-        }),
-      ),
-
-      h(
-        TableRowGroup,
-        { title: 'Output options' },
-        h(TableSwitchRow, {
-          label: 'Word wrap',
-          subLabel: 'Wrap long output lines.',
-          value: wordWrap,
-          onValueChange: setWordWrap,
-        }),
-      ),
-
-      h(
-        Stack,
-        { spacing: 8 },
-        h(
-          Text,
-          {
-            variant: 'heading-sm/semibold',
-            color: resultOk ? 'text-strong' : 'text-danger',
-          },
-          resultOk ? 'Result' : 'Error',
-        ),
-
-        h(
-          Card,
-          null,
-          h(
-            ScrollView,
-            {
-              nestedScrollEnabled: true,
-              style: { maxHeight: 320 },
-            },
-            h(
-              ScrollView,
-              {
-                nestedScrollEnabled: true,
-                horizontal: !wordWrap,
-              },
-              h(
-                Text,
-                {
-                  selectable: true,
-                  style: { fontFamily: 'monospace' },
-                },
-                result || 'Run code to see its output.',
-              ),
-            ),
-          ),
-        ),
-
-        result
-          ? h(Button, {
-              text: 'Copy result',
-              variant: 'secondary',
-              onPress: () => Clipboard.setString(result),
-            })
-          : null,
-      ),
-
-      h(
-        TableRowGroup,
-        { title: `History (${history.length}/${MAX_HISTORY})` },
-
-        history.length === 0
-          ? h(TableRow, {
-              label: 'No runs yet.',
-              subLabel:
-                'Recent results stay available when you navigate away from DevLab.',
-            })
-          : history.map((entry) =>
-              h(TableRow, {
-                key: entry.id,
-                label:
-                  entry.code.length > 64
-                    ? `${entry.code.slice(0, 64)}…`
-                    : entry.code,
-                subLabel: `${new Date(entry.ts).toLocaleTimeString()} · ${
-                  entry.ok ? 'Success' : 'Error'
-                } · ${entry.result.slice(0, 90)}`,
-                subLabelLineClamp: 2,
-                onPress: () => {
-                  codeRef.current = entry.code
-                  setCode(entry.code)
-                  setResult(entry.result)
-                  setResultOk(entry.ok)
-                },
-              }),
-            ),
-      ),
-
-      history.length > 0
-        ? h(Button, {
-            text: 'Clear history',
-            variant: 'destructive',
-            onPress: () => {
-              sharedHistory = []
-              setHistory([])
-
-              for (const listener of [...historyListeners]) {
-                try {
-                  listener(sharedHistory)
-                } catch {
-                  // Ignore listener errors.
-                }
-              }
-            },
-          })
-        : null,
-    ),
-  )
+			{entries.length > 0 && (
+				<Button
+					text="Clear history"
+					variant="destructive"
+					onPress={() => setHistory([])}
+				/>
+			)}
+		</TabScreen>
+	)
 }

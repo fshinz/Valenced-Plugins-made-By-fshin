@@ -1,76 +1,117 @@
 import * as settings from '@valenced/discord/modules/settings'
+import { lookupGeneratedIconComponent } from '@valenced/utils/discord'
 import { setPluginApi } from './api'
 import { DevLabSettings } from './settings'
 import { bindStorage, recordError } from './storage'
+import type { DevLabState } from './storage'
 
 const SETTINGS_KEY = 'shin.devlab.settings'
+const SECTION = 'VALENCED'
+const SECTION_RETRY_MS = 20
+const SECTION_MAX_ATTEMPTS = 500
 
-export default plugin({
-  jsonStorage: {
-    load: true,
-    default: { entries: [], enabled: true },
-  },
-  SettingsComponent: DevLabSettings,
+const initialState: DevLabState = { entries: [], enabled: true }
 
-  start({ cleanup, plugin: pluginSelf, jsonStorage, logger }) {
-    bindStorage(jsonStorage)
-    setPluginApi(pluginSelf as any)
+// addSettingsItemToSection throws while the section doesn't exist yet.
+function sectionExists() {
+	try {
+		settings.addSettingsItemToSection(SECTION, items => items)()
+		return true
+	} catch {
+		return false
+	}
+}
 
-    const report = (error: unknown, context = 'DevLab') => { recordError(error, context).catch(() => {}) }
-    try {
-      ;(pluginSelf as any).reportError = (error: unknown) => report(error, 'Reported plugin error')
-    } catch (error) { report(error, 'Failed to register error reporter') }
+export default plugin<{ jsonStorage: DevLabState }>({
+	jsonStorage: {
+		load: true,
+		default: initialState,
+	},
 
-    const origHandler = (globalThis as any).ErrorUtils?.getGlobalHandler?.()
-    try {
-      ;(globalThis as any).ErrorUtils?.setGlobalHandler?.((error: Error, isFatal: boolean) => {
-        report(error, isFatal ? 'Fatal error' : 'Unhandled error')
-        origHandler?.(error, isFatal)
-      })
-    } catch (error) { report(error, 'Failed to install global error handler') }
-    cleanup(() => {
-      try { if (origHandler) (globalThis as any).ErrorUtils?.setGlobalHandler?.(origHandler) } catch { /* */ }
-    })
+	SettingsComponent: DevLabSettings,
 
-    // Register a first-class route in Discord Settings, independently of the plugin manager page.
-    const undo: Array<() => void> = []
-    let stopped = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let attempts = 0
-    const sectionExists = () => {
-      try { settings.addSettingsItemToSection('VALENCED', items => items)(); return true } catch { return false }
-    }
-    const placeSection = () => {
-      if (stopped) return
-      if (!sectionExists()) {
-        attempts++
-        if (attempts < 20) Promise.resolve().then(placeSection)
-        else if (attempts < 500) retry = setTimeout(placeSection, 20)
-        return
-      }
-      undo.push(settings.registerSettingsSection
-        ? settings.registerSettingsSection(SETTINGS_KEY, { label: 'DevLab', settings: [SETTINGS_KEY], index: 1 })
-        : settings.addSettingsItemToSection('VALENCED', SETTINGS_KEY))
-      settings.refreshSettings()
-    }
-    const off = settings.onSettingsModulesLoaded(() => {
-      undo.push(settings.registerSettingsItems({
-        [SETTINGS_KEY]: {
-          type: 'route',
-          parent: null,
-          IconComponent: () => null,
-          useTitle: () => 'DevLab',
-          screen: { route: SETTINGS_KEY, getComponent: () => DevLabSettings },
-        },
-      }))
-      placeSection()
-    })
-    cleanup(off, () => {
-      stopped = true
-      clearTimeout(retry)
-      undo.splice(0).forEach(fn => { try { fn() } catch { /* */ } })
-      settings.refreshSettings()
-    })
-    logger?.log?.('DevLab started')
-  },
+	start({ cleanup, plugin: self, jsonStorage, logger }) {
+		bindStorage(jsonStorage)
+		setPluginApi(self)
+
+		const report = (error: unknown, context: string) => {
+			recordError(error, context).catch(() => {})
+		}
+
+		// Errors other plugins report through the plugin API end up in the Errors tab.
+		self.reportError = error => report(error, 'Reported plugin error')
+
+		const errorUtils = (globalThis as any).ErrorUtils
+		const previousHandler = errorUtils?.getGlobalHandler?.()
+
+		errorUtils?.setGlobalHandler?.((error: Error, isFatal: boolean) => {
+			report(error, isFatal ? 'Fatal error' : 'Unhandled error')
+			previousHandler?.(error, isFatal)
+		})
+
+		cleanup(() => {
+			if (previousHandler) errorUtils?.setGlobalHandler?.(previousHandler)
+		})
+
+		// DevLab also gets its own row in Discord settings :>
+		const undo: Array<() => void> = []
+		let stopped = false
+		let retryTimer: ReturnType<typeof setTimeout> | undefined
+		let attempts = 0
+
+		const placeInSection = () => {
+			if (stopped) return
+
+			if (!sectionExists()) {
+				if (++attempts < SECTION_MAX_ATTEMPTS) {
+					retryTimer = setTimeout(placeInSection, SECTION_RETRY_MS)
+				}
+				return
+			}
+
+			undo.push(
+				settings.registerSettingsSection
+					? settings.registerSettingsSection(SETTINGS_KEY, {
+							label: 'DevLab',
+							settings: [SETTINGS_KEY],
+							index: 1,
+						})
+					: settings.addSettingsItemToSection(SECTION, SETTINGS_KEY),
+			)
+			settings.refreshSettings()
+		}
+
+		const stopListening = settings.onSettingsModulesLoaded(() => {
+			undo.push(
+				settings.registerSettingsItems({
+					[SETTINGS_KEY]: {
+						type: 'route',
+						parent: null,
+						IconComponent: lookupGeneratedIconComponent('WrenchIcon'),
+						useTitle: () => 'DevLab',
+						screen: {
+							route: SETTINGS_KEY,
+							getComponent: () => DevLabSettings,
+						},
+					},
+				}),
+			)
+			placeInSection()
+		})
+
+		cleanup(stopListening, () => {
+			stopped = true
+			clearTimeout(retryTimer)
+			for (const remove of undo.splice(0)) {
+				try {
+					remove()
+				} catch {
+					// Already removed along with its section.
+				}
+			}
+			settings.refreshSettings()
+		})
+
+		logger.log('DevLab started')
+	},
 })

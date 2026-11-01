@@ -1,103 +1,88 @@
 import { getInstalledPlugins } from '../native'
 
 export type CompatibilityProblem = {
-  id: string
-  type: 'missing' | 'version' | 'api'
-  message: string
+	id: string
+	type: 'missing' | 'version' | 'api'
+	message: string
 }
 
 export type CompatibilityReport = {
-  pluginId: string
-  pluginName: string
-  compatible: boolean
-  problems: CompatibilityProblem[]
+	pluginId: string
+	pluginName: string
+	compatible: boolean
+	problems: CompatibilityProblem[]
 }
 
-// Known Valenced API surface — expand this list as the API grows.
 const KNOWN_API: Record<string, string[]> = {
-  '@valenced/discord/design': [
-    'Design', 'TableRow', 'TableRowGroup', 'TableSwitchRow', 'Button', 'Text', 'Stack',
-  ],
-  '@valenced/react': ['React', 'ReactNative'],
-  '@valenced/modules/finders': ['getModules', 'withProps', 'withName'],
-  '@valenced/patcher': ['before', 'after', 'instead'],
-  '@valenced/externals/react-native-clipboard': ['Clipboard'],
+	'@valenced/discord/design': [
+		'Design',
+		'TableRow',
+		'TableRowGroup',
+		'TableSwitchRow',
+		'Button',
+		'Text',
+		'Stack',
+	],
+	'@valenced/react': ['React', 'ReactNative'],
+	'@valenced/modules/finders': ['getModules', 'withProps', 'withName'],
+	'@valenced/patcher': ['before', 'after', 'instead'],
+	'@valenced/externals/react-native-clipboard': ['Clipboard'],
 }
 
-function semverSatisfies(version: string, range: string): boolean {
-  // Simple range check: >=X <Y
-  try {
-    const parts = version.split('.').map(Number)
-    const major = parts[0] ?? 0
+// Only understands ranges like ">=1 <2", which is all valenced.api uses.
+function satisfiesMajor(version: string, range: string) {
+	const major = Number(version.split('.')[0]) || 0
+	const min = Number(range.match(/>=(\d+)/)?.[1] ?? 0)
+	const max = Number(range.match(/<(\d+)/)?.[1] ?? Infinity)
+	return major >= min && major < max
+}
 
-    const geMatch = range.match(/>=(\d+)/)
-    const ltMatch = range.match(/<(\d+)/)
+async function loadPlugins(): Promise<any[]> {
+	let plugins: unknown = []
+	try {
+		plugins = await getInstalledPlugins()
+	} catch {
+		// Fall through to the global registry below.
+	}
+	if (Array.isArray(plugins) && plugins.length > 0) return plugins
 
-    const ge = geMatch ? Number(geMatch[1]) : 0
-    const lt = ltMatch ? Number(ltMatch[1]) : Infinity
-
-    return major >= ge && major < lt
-  } catch {
-    return true
-  }
+	const registry = (globalThis as any).__valenced?.plugins
+	return registry ? Object.values(registry) : []
 }
 
 export async function checkAllPlugins(): Promise<CompatibilityReport[]> {
-  let plugins: any[]
+	const plugins = await loadPlugins()
+	const clientVersion = (globalThis as any).__valenced?.version ?? '1.0.0'
 
-  try {
-    plugins = await getInstalledPlugins()
-  } catch {
-    // If native call fails, fall back to an empty list.
-    plugins = []
-  }
+	return plugins.map((plugin): CompatibilityReport => {
+		const manifest = plugin.manifest ?? plugin
+		const problems: CompatibilityProblem[] = []
 
-  if (!Array.isArray(plugins) || plugins.length === 0) {
-    // Try to find plugins via the global plugin registry if the native call returned nothing.
-    try {
-      const registry = (globalThis as any).__valenced?.plugins
-      if (registry) {
-        plugins = Object.values(registry)
-      }
-    } catch {
-      plugins = []
-    }
-  }
+		const requiredApi = manifest?.dependencies?.['valenced.api']?.version
+		if (requiredApi && !satisfiesMajor(clientVersion, requiredApi)) {
+			problems.push({
+				id: 'valenced.api',
+				type: 'version',
+				message: `Requires valenced.api ${requiredApi}, running ${clientVersion}`,
+			})
+		}
 
-  return plugins.map((p: any): CompatibilityReport => {
-    const problems: CompatibilityProblem[] = []
-    const manifest = p.manifest ?? p
+		const imports: string[] = manifest?.imports ?? []
+		for (const path of imports) {
+			if (!KNOWN_API[path]) {
+				problems.push({
+					id: path,
+					type: 'api',
+					message: `Import path "${path}" is not a recognized Valenced API.`,
+				})
+			}
+		}
 
-    // Check required valenced.api version against the running client.
-    const requiredApi = manifest?.dependencies?.['valenced.api']?.version
-    const clientVersion = (globalThis as any).__valenced?.version ?? '1.0.0'
-
-    if (requiredApi && !semverSatisfies(clientVersion, requiredApi)) {
-      problems.push({
-        id: 'valenced.api',
-        type: 'version',
-        message: `Requires valenced.api ${requiredApi}, running ${clientVersion}`,
-      })
-    }
-
-    // Check any declared import paths against our known API surface.
-    const imports: string[] = manifest?.imports ?? []
-    for (const imp of imports) {
-      const known = KNOWN_API[imp]
-      if (!known) {
-        problems.push({
-          id: imp,
-          type: 'api',
-          message: `Import path "${imp}" is not a recognized Valenced API.`,
-        })
-      }
-    }
-
-    return {
-      pluginId: manifest?.id ?? p.id ?? 'unknown',
-      pluginName: manifest?.name ?? p.name ?? 'Unknown Plugin',
-      compatible: problems.length === 0,
-      problems,
-    }
-  })
+		return {
+			pluginId: manifest?.id ?? plugin.id ?? 'unknown',
+			pluginName: manifest?.name ?? plugin.name ?? 'Unknown Plugin',
+			compatible: problems.length === 0,
+			problems,
+		}
+	})
 }
