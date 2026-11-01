@@ -29,6 +29,29 @@
         }
       }
     },
+    "shin.dev-lab": {
+      "name": "DevLab",
+      "description": "everything a developer needs",
+      "author": "shin <1381008677301129257> (https://github.com/fshinz/Valenced-Plugins-made-By-fshin \"Source code\")",
+      "channels": {
+        "latest": "1.0.8"
+      },
+      "versions": {
+        "1.0.8": {
+          "url": "https://fshinz.github.io/Valenced-Plugins-made-By-fshin/pool/shin.dev-lab@1.0.8.zip",
+          "sha256": "001da800300fb0af8009b42618de5f3e4565a4426a1ef3aaa43653891f51d3dc",
+          "size": 8238,
+          "dependencies": {
+            "valenced.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        }
+      }
+    },
     "shin.plugin-doctor": {
       "name": "Plugin Doctor",
       "description": "Diagnostics and compatibility tools for Valenced plugin developers",
