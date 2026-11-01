@@ -1,19 +1,15 @@
 import { Design } from '@valenced/discord/design'
 import { React, ReactNative } from '@valenced/react'
-import { CompatibilityTab } from './tabs/CompatibilityTab'
 import { ComponentTab } from './tabs/ComponentTab'
 import { ErrorsTab } from './tabs/ErrorsTab'
 import { MetroTab } from './tabs/MetroTab'
-import { SandboxTab } from './tabs/SandboxTab'
-import { WatchTab } from './tabs/WatchTab'
+import { ToolsTab } from './tabs/ToolsTab'
 
 const TABS = [
-	{ id: 'errors', label: 'Errors', Tab: ErrorsTab },
+	{ id: 'tools', label: 'Tools', Tab: ToolsTab },
 	{ id: 'metro', label: 'Metro', Tab: MetroTab },
-	{ id: 'component', label: 'Component', Tab: ComponentTab },
-	{ id: 'compat', label: 'Compat', Tab: CompatibilityTab },
-	{ id: 'watch', label: 'Watch', Tab: WatchTab },
-	{ id: 'sandbox', label: 'Sandbox', Tab: SandboxTab },
+	{ id: 'components', label: 'Components', Tab: ComponentTab },
+	{ id: 'errors', label: 'Errors', Tab: ErrorsTab },
 ]
 
 export function DevLabSettings() {
