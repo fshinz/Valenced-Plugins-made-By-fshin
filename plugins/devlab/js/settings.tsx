@@ -18,7 +18,7 @@ const TABS = [
   { id: 'sandbox', label: 'Sandbox', Tab: SandboxTab },
 ]
 
-export function PluginDoctorSettings() {
+export function DevLabSettings() {
   const { SegmentedControlPages, Tabs, useSegmentedControlState } = Design
   const { View, useWindowDimensions } = ReactNative
   const { width } = useWindowDimensions()
@@ -37,3 +37,4 @@ export function PluginDoctorSettings() {
     h(SegmentedControlPages, { state, style: { flex: 1 } }),
   )
 }
+w

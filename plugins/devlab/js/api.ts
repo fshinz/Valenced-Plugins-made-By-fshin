@@ -5,4 +5,4 @@ export let pluginApi: PluginApi<any> | null = null
 
 export function setPluginApi(api: PluginApi<any>) {
   pluginApi = api
-}
+  }

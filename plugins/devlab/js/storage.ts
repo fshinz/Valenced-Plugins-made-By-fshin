@@ -80,7 +80,7 @@ export function saveState(next: DoctorState) {
   return job
 }
 
-export async function recordError(error: unknown, context = 'Plugin Doctor') {
+export async function recordError(error: unknown, context = 'DevLab') {
   const current = readCachedState()
   const actualError = error instanceof Error ? error : new Error(String(error))
   const entry: DiagnosticEntry = {
@@ -106,4 +106,4 @@ export async function clearErrors() {
 export async function setMonitoringEnabled(enabled: boolean) {
   const current = readCachedState()
   await saveState({ ...current, enabled })
-}
+}w

@@ -3,7 +3,7 @@ import { createFilterGenerator } from '@valenced/modules/finders/filters'
 
 const anyModule = createFilterGenerator<[]>(
   () => true,
-  () => 'plugin-doctor.any-module',
+  () => 'devlab.any-module',
 )
 
 // Initialized Metro modules as [id, exports]. Uninitialized ones are skipped so nothing gets side-loaded.
