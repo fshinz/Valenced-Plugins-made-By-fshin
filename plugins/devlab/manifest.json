@@ -6,6 +6,7 @@
 "author": "shin <1381008677301129257> (https://github.com/fshinz/Valenced-Plugins-made-By-fshin \"Source code\")",
 "contributors": ["k1ng_op <641266820187160576> (https://github.com/k1ng0p \"GitHub\")"],
 "version": "1.0.9",
+"icon": "WrenchIcon",
 
 "dependencies": {
     "valenced.api": {
