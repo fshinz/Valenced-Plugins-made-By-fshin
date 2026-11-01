@@ -1,141 +1,157 @@
-import { Page, SearchInput } from '@valenced/components'
 import { Design } from '@valenced/discord/design'
 import { Clipboard } from '@valenced/externals/react-native-clipboard'
-import { React, ReactNative } from '@valenced/react'
+import { React } from '@valenced/react'
+import { SearchField } from '../components/SearchField'
+import { TabScreen } from '../components/TabScreen'
 import { getModuleEntries } from '../registry'
 
-const h = (...args: any[]) => React.createElement(...args)
+const { Button, TableRow, TableRowGroup } = Design
+
+const MAX_RESULTS = 150
 
 type ComponentInfo = {
-  name: string
-  moduleId: string
-  propTypes?: string[]
-  isForwardRef: boolean
-  isMemo: boolean
+	name: string
+	moduleId: string
+	propTypes?: string[]
+	isForwardRef: boolean
+	isMemo: boolean
 }
 
-function looksLikeComponent(val: unknown): boolean {
-  if (!val || (typeof val !== 'function' && typeof val !== 'object')) return false
-  if (typeof val === 'function') {
-    const name = (val as any).name ?? ''
-    // Discord component names are PascalCase or start with upper letter
-    if (!name || name[0] !== name[0].toUpperCase() || name[0] === name[0].toLowerCase()) return false
-    return true
-  }
-  // memo / forwardRef wrapper
-  const t = (val as any).$$typeof
-  if (t) {
-    const s = String(t)
-    if (s.includes('memo') || s.includes('forward')) return true
-  }
-  return false
+function wrapperKind(value: any) {
+	const tag = value?.$$typeof ? String(value.$$typeof) : ''
+	return { isMemo: tag.includes('memo'), isForwardRef: tag.includes('forward') }
 }
 
-function scanComponents(filter: string, limit = 150): ComponentInfo[] {
-  const results: ComponentInfo[] = []
-  const lower = filter.toLowerCase()
+function looksLikeComponent(value: any) {
+	if (typeof value === 'function') {
+		// Component names start with an uppercase letter.
+		const first = value.name?.[0]
+		return (
+			!!first && first === first.toUpperCase() && first !== first.toLowerCase()
+		)
+	}
+	if (!value || typeof value !== 'object') return false
 
-  for (const [id, exp] of getModuleEntries()) {
-    if (results.length >= limit) break
-    try {
-      if (!exp || typeof exp !== 'object') continue
-
-      for (const key of Object.keys(exp)) {
-        if (results.length >= limit) break
-        if (filter && !key.toLowerCase().includes(lower)) continue
-
-        const val = exp[key]
-        if (!looksLikeComponent(val)) continue
-
-        const isMemo = !!(val as any).$$typeof && String((val as any).$$typeof).includes('memo')
-        const isForwardRef = !!(val as any).$$typeof && String((val as any).$$typeof).includes('forward')
-        const inner = isMemo ? (val as any).type : isForwardRef ? (val as any).render : val
-        const propKeys = inner?.propTypes ? Object.keys(inner.propTypes) : []
-
-        results.push({
-          name: key,
-          moduleId: id,
-          propTypes: propKeys.length > 0 ? propKeys : undefined,
-          isMemo,
-          isForwardRef,
-        })
-      }
-    } catch { /* */ }
-  }
-
-  return results
+	const { isMemo, isForwardRef } = wrapperKind(value)
+	return isMemo || isForwardRef
 }
 
-function describeKind(item: ComponentInfo) {
-  return item.isMemo ? 'React.memo' : item.isForwardRef ? 'forwardRef' : 'Component'
+function scanComponents(filter: string) {
+	const needle = filter.toLowerCase()
+	const results: ComponentInfo[] = []
+
+	for (const [moduleId, exports] of getModuleEntries()) {
+		if (results.length >= MAX_RESULTS) break
+		if (!exports || typeof exports !== 'object') continue
+
+		try {
+			for (const name of Object.keys(exports)) {
+				if (results.length >= MAX_RESULTS) break
+				if (filter && !name.toLowerCase().includes(needle)) continue
+
+				const value = exports[name]
+				if (!looksLikeComponent(value)) continue
+
+				const { isMemo, isForwardRef } = wrapperKind(value)
+				const inner = isMemo ? value.type : isForwardRef ? value.render : value
+				const propTypes = inner?.propTypes ? Object.keys(inner.propTypes) : []
+
+				results.push({
+					name,
+					moduleId,
+					propTypes: propTypes.length > 0 ? propTypes : undefined,
+					isMemo,
+					isForwardRef,
+				})
+			}
+		} catch {
+			// Skip modules whose exports throw on access.
+		}
+	}
+
+	return results
+}
+
+function describeKind({ isMemo, isForwardRef }: ComponentInfo) {
+	return isMemo ? 'React.memo' : isForwardRef ? 'forwardRef' : 'Component'
 }
 
 export function ComponentTab() {
-  const { ScrollView } = ReactNative
-  const { Button, TableRow, TableRowGroup } = Design
+	const [filter, setFilter] = React.useState('')
+	const [components, setComponents] = React.useState<ComponentInfo[]>([])
+	const [scanned, setScanned] = React.useState(false)
+	const [expandedKey, setExpandedKey] = React.useState<string | null>(null)
 
-  const [filter, setFilter] = React.useState('')
-  const [components, setComponents] = React.useState<ComponentInfo[]>([])
-  const [scanned, setScanned] = React.useState(false)
-  const [expandedKey, setExpandedKey] = React.useState<string | null>(null)
+	const handleScan = () => {
+		setComponents(scanComponents(filter))
+		setScanned(true)
+		setExpandedKey(null)
+	}
 
-  const scan = () => {
-    setComponents(scanComponents(filter))
-    setScanned(true)
-    setExpandedKey(null)
-  }
+	const renderItem = (item: ComponentInfo) => {
+		const key = `${item.moduleId}-${item.name}`
+		const expanded = expandedKey === key
+		const props = item.propTypes?.join(', ')
 
-  return h(
-    ScrollView,
-    { keyboardShouldPersistTaps: 'handled', contentContainerStyle: { paddingBottom: 32 } },
-    h(
-      Page,
-      { spacing: 16 },
-      h(SearchInput, {
-        value: filter,
-        onChange: setFilter,
-        placeholder: 'Filter by component name (optional)',
-        isClearable: true,
-        autoCapitalize: 'none',
-        autoCorrect: false,
-      }),
-      h(Button, { text: 'Scan Metro modules', variant: 'primary', onPress: scan }),
-      scanned
-        ? h(
-            TableRowGroup,
-            { title: `Results (${components.length})` },
-            components.length === 0
-              ? h(TableRow, {
-                  label: filter ? `No components matched "${filter}".` : 'No React components found.',
-                })
-              : components.map(item => {
-                  const key = `${item.moduleId}-${item.name}`
-                  const expanded = expandedKey === key
-                  return h(TableRow, {
-                    key,
-                    label: item.name,
-                    subLabel: expanded
-                      ? [
-                          `Module: ${item.moduleId}`,
-                          describeKind(item),
-                          item.propTypes ? `Props: ${item.propTypes.join(', ')}` : null,
-                        ]
-                          .filter(Boolean)
-                          .join('\n')
-                      : `#${item.moduleId} · ${describeKind(item)}`,
-                    subLabelLineClamp: expanded ? 10 : 1,
-                    trailing: expanded ? h(TableRow.TrailingText, { text: 'Copy' }) : null,
-                    onPress: () => {
-                      if (!expanded) return setExpandedKey(key)
-                      Clipboard.setString(
-                        `${item.name} (module ${item.moduleId})${item.propTypes ? `\nProps: ${item.propTypes.join(', ')}` : ''}`,
-                      )
-                      setExpandedKey(null)
-                    },
-                  })
-                }),
-          )
-        : null,
-    ),
-  )
+		const handlePress = () => {
+			if (!expanded) return setExpandedKey(key)
+
+			Clipboard.setString(
+				`${item.name} (module ${item.moduleId})${props ? `\nProps: ${props}` : ''}`,
+			)
+			setExpandedKey(null)
+		}
+
+		return (
+			<TableRow
+				key={key}
+				label={item.name}
+				subLabel={
+					expanded
+						? [
+								`Module: ${item.moduleId}`,
+								describeKind(item),
+								props && `Props: ${props}`,
+							]
+								.filter(Boolean)
+								.join('\n')
+						: `#${item.moduleId} · ${describeKind(item)}`
+				}
+				subLabelLineClamp={expanded ? 10 : 1}
+				trailing={expanded ? <TableRow.TrailingText text="Copy" /> : null}
+				onPress={handlePress}
+			/>
+		)
+	}
+
+	return (
+		<TabScreen>
+			<SearchField
+				value={filter}
+				onChange={setFilter}
+				placeholder="Filter by component name (optional)"
+			/>
+			<Button
+				text="Scan Metro modules"
+				variant="primary"
+				onPress={handleScan}
+			/>
+
+			{scanned && (
+				<TableRowGroup title={`Results (${components.length})`}>
+					{components.length === 0 ? (
+						<TableRow
+							label={
+								filter
+									? `No components matched "${filter}".`
+									: 'No React components found.'
+							}
+						/>
+					) : (
+						components.map(renderItem)
+					)}
+				</TableRowGroup>
+			)}
+		</TabScreen>
+	)
 }
