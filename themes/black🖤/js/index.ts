@@ -212,8 +212,8 @@ export default plugin({
             WHITE_500: '#FFFFFF',
         };
 
-        themes.registerTheme('obsidian-themes', 'obsidian-black', {
-            name: 'obsidian black',
+        themes.registerTheme('shin's themes', 'black', {
+            name: 'black',
             getColors: () => ({
                 semantic: {
                     darker: { ...semantic },
