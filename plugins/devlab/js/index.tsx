@@ -3,12 +3,25 @@ import { lookupGeneratedIconComponent } from '@valenced/utils/discord'
 import { setPluginApi } from './api'
 import { DevLabSettings } from './settings'
 import { bindStorage, recordError } from './storage'
+import { TOOLS } from './tools'
 import type { DevLabState } from './storage'
 
 const SETTINGS_KEY = 'shin.devlab.settings'
 const SECTION = 'VALENCED'
 const SECTION_RETRY_MS = 20
 const SECTION_MAX_ATTEMPTS = 500
+
+// Each tool is its own screen so the system back gesture returns to the Tools tab.
+const toolItems: Record<string, settings.SettingsItem> = {}
+for (const { route, title, Screen } of TOOLS) {
+	toolItems[route] = {
+		type: 'route',
+		parent: null,
+		unsearchable: true,
+		useTitle: () => title,
+		screen: { route, getComponent: () => Screen },
+	}
+}
 
 const initialState: DevLabState = { entries: [], enabled: true }
 
@@ -94,6 +107,7 @@ export default plugin<{ jsonStorage: DevLabState }>({
 							getComponent: () => DevLabSettings,
 						},
 					},
+					...toolItems,
 				}),
 			)
 			placeInSection()
