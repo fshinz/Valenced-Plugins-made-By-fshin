@@ -212,7 +212,7 @@ export default plugin({
             WHITE_500: '#FFFFFF',
         };
 
-        themes.registerTheme('shin's themes', 'black', {
+        themes.registerTheme('shin\'s themes', 'black', {
             name: 'black',
             getColors: () => ({
                 semantic: {
