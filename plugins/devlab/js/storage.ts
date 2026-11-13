@@ -5,7 +5,6 @@ export type DiagnosticEntry = {
 	title: string
 	message: string
 	stack?: string
-	context?: string
 	timestamp: number
 	level: 'error' | 'warning' | 'info'
 }
@@ -50,10 +49,6 @@ export function readState(): DevLabState {
 	return normalizeState(storage?.use())
 }
 
-function readCachedState(): DevLabState {
-	return normalizeState(storage?.cache)
-}
-
 async function waitUntilLoaded() {
 	if (!storage) return
 	for (
@@ -66,37 +61,36 @@ async function waitUntilLoaded() {
 	if (storage.loaded === false) await storage.get?.()
 }
 
-export function saveState(next: DevLabState) {
+// Runs inside the queue on the loaded state, so bursts of errors don't overwrite each other.
+function updateState(update: (state: DevLabState) => DevLabState) {
 	const job = writeQueue.then(async () => {
 		if (!storage) return
 		await waitUntilLoaded()
-		const normalized = normalizeState(next)
-		storage.cache = normalized
-		await storage.set(normalized, true)
+		const next = normalizeState(update(normalizeState(storage.cache)))
+		storage.cache = next
+		await storage.set(next, true)
 	})
 	writeQueue = job.catch(() => {})
 	return job
 }
 
-export async function recordError(error: unknown, context = 'DevLab') {
-	const current = readCachedState()
-	const actualError = error instanceof Error ? error : new Error(String(error))
+export function recordError(error: unknown, title = 'DevLab') {
+	const { message, stack } =
+		error instanceof Error ? error : new Error(String(error))
 	const entry: DiagnosticEntry = {
 		id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-		title: context,
-		message: actualError.message,
-		stack: actualError.stack,
-		context,
+		title,
+		message,
+		stack,
 		timestamp: Date.now(),
 		level: 'error',
 	}
-	await saveState({
-		...current,
-		entries: [entry, ...current.entries].slice(0, MAX_ENTRIES),
-	})
+	return updateState(state => ({
+		...state,
+		entries: [entry, ...state.entries],
+	})).catch(() => {})
 }
 
-export async function clearErrors() {
-	const current = readCachedState()
-	await saveState({ ...current, entries: [] })
+export function clearErrors() {
+	return updateState(state => ({ ...state, entries: [] }))
 }

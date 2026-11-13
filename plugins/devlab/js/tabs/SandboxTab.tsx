@@ -48,12 +48,10 @@ const QUICK_ACTIONS = [
 	},
 ]
 
-// Lets snippets use top-level await.
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
 	...args: string[]
 ) => (...args: any[]) => Promise<any>
 
-// History is module-level so it survives leaving the DevLab screen.
 let history: HistoryEntry[] = []
 let nextHistoryId = 0
 const historyListeners = new Set<HistoryListener>()
@@ -71,8 +69,6 @@ function addToHistory(code: string, result: string, ok: boolean) {
 export function SandboxTab() {
 	const { ScrollView } = ReactNative
 
-	// The ref keeps Run reading the latest text even when pressed mid-edit.
-	const codeRef = React.useRef('')
 	const [code, setCode] = React.useState('')
 	const [result, setResult] = React.useState('')
 	const [resultOk, setResultOk] = React.useState(true)
@@ -88,16 +84,10 @@ export function SandboxTab() {
 		}
 	}, [])
 
-	const loadCode = (value: string) => {
-		codeRef.current = value
-		setCode(value)
-	}
-
 	const run = async () => {
-		const source = codeRef.current.trim()
+		const source = code.trim()
 		if (!source || running) return
 
-		codeRef.current = source
 		setRunning(true)
 
 		try {
@@ -138,7 +128,7 @@ export function SandboxTab() {
 	}
 
 	const handleClear = () => {
-		loadCode('')
+		setCode('')
 		setResult('')
 		setResultOk(true)
 	}
@@ -149,7 +139,7 @@ export function SandboxTab() {
 				autoFocus={false}
 				label="JavaScript"
 				value={code}
-				onChange={(value: string) => loadCode(value)}
+				onChange={setCode}
 				placeholder={
 					'return Object.keys(valenced.discord.flux.Stores)\n\n// Async works automatically:\nreturn await Promise.resolve("hello")'
 				}
@@ -163,7 +153,7 @@ export function SandboxTab() {
 						label={action.label}
 						trailing={<TableRow.TrailingText text="Load" />}
 						onPress={() => {
-							loadCode(action.code)
+							setCode(action.code)
 							setResult(`Loaded: ${action.label}\nPress Run to execute.`)
 							setResultOk(true)
 						}}
@@ -236,7 +226,7 @@ export function SandboxTab() {
 							subLabel={`${new Date(entry.ts).toLocaleTimeString()} · ${entry.ok ? 'Success' : 'Error'} · ${entry.result.slice(0, 90)}`}
 							subLabelLineClamp={2}
 							onPress={() => {
-								loadCode(entry.code)
+								setCode(entry.code)
 								setResult(entry.result)
 								setResultOk(entry.ok)
 							}}

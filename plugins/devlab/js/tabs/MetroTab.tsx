@@ -1,12 +1,24 @@
+import { AlertActionCreators } from '@valenced/discord/actions'
 import { Design } from '@valenced/discord/design'
 import { Clipboard } from '@valenced/externals/react-native-clipboard'
 import { React } from '@valenced/react'
 import { SearchField } from '../components/SearchField'
 import { TabScreen } from '../components/TabScreen'
 import { getModuleEntries } from '../registry'
+import { recordError } from '../storage'
 
-const { Button, Card, Stack, TableRow, TableRowGroup, Text } = Design
+const {
+	AlertActionButton,
+	AlertModal,
+	Button,
+	Card,
+	Stack,
+	TableRow,
+	TableRowGroup,
+	Text,
+} = Design
 
+const LOAD_ALL_ALERT = 'devlab-load-all-modules'
 const MAX_RESULTS = 60
 const PREVIEW_KEYS = 6
 const MIN_QUERY_LENGTH = 2
@@ -29,9 +41,7 @@ function searchModules(query: string) {
 			) {
 				results.push({ id, keys, exports })
 			}
-		} catch {
-			// Exotic exports can throw on key access.
-		}
+		} catch {}
 	}
 
 	return results
@@ -92,12 +102,52 @@ export function MetroTab() {
 	const [query, setQuery] = React.useState('')
 	const [selected, setSelected] = React.useState<ModuleMatch | null>(null)
 
-	const totalModules = React.useMemo(() => getModuleEntries().length, [])
+	const [totalModules, setTotalModules] = React.useState(
+		() => getModuleEntries().length,
+	)
 	const searching = query.length >= MIN_QUERY_LENGTH
 	const results = React.useMemo(
 		() => (searching ? searchModules(query) : []),
-		[query, searching],
+		[query, searching, totalModules],
 	)
+
+	const loadAll = () => {
+		try {
+			setTotalModules(getModuleEntries(true).length)
+		} catch (error) {
+			recordError(error, 'Load all modules failed')
+		}
+	}
+
+	const confirmLoadAll = () => {
+		const dismiss = () => AlertActionCreators.dismissAlert(LOAD_ALL_ALERT)
+
+		AlertActionCreators.openAlert(
+			LOAD_ALL_ALERT,
+			<AlertModal
+				title="Load all modules?"
+				content="This initializes every Metro module and can cause side effects, lag or crashes."
+				actions={
+					<>
+						<AlertActionButton
+							text="Load all"
+							variant="destructive"
+							onPress={() => {
+								dismiss()
+								// Let the dialog close before the scan blocks the UI.
+								setTimeout(loadAll, 100)
+							}}
+						/>
+						<AlertActionButton
+							text="Cancel"
+							variant="secondary"
+							onPress={dismiss}
+						/>
+					</>
+				}
+			/>,
+		)
+	}
 
 	if (selected) {
 		return <ModuleDetail module={selected} onBack={() => setSelected(null)} />
@@ -111,6 +161,11 @@ export function MetroTab() {
 					trailing={
 						<TableRow.TrailingText text={totalModules.toLocaleString()} />
 					}
+				/>
+				<TableRow
+					label="Load all modules"
+					subLabel="Initializes modules that haven't loaded yet."
+					onPress={confirmLoadAll}
 				/>
 			</TableRowGroup>
 
