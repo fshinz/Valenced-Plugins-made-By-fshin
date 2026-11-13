@@ -167,7 +167,6 @@ function emit(storeName: string, snapshot: unknown) {
 	}
 }
 
-// The log outlives the screen, so reopening the tab shows earlier events.
 export function addWatchListener(listener: WatchLogListener) {
 	listeners.add(listener)
 	return () => {
@@ -189,7 +188,6 @@ export function watchStore(storeName: string) {
 
 	const initial = snapshotStore(storeName)
 
-	// Polling catches stores that don't expose change listeners.
 	const watch: Watch = {
 		lastSnapshot: serialize(initial),
 		interval: setInterval(() => {

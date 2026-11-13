@@ -13,21 +13,13 @@ export type CompatibilityReport = {
 	problems: CompatibilityProblem[]
 }
 
-const KNOWN_API: Record<string, string[]> = {
-	'@valenced/discord/design': [
-		'Design',
-		'TableRow',
-		'TableRowGroup',
-		'TableSwitchRow',
-		'Button',
-		'Text',
-		'Stack',
-	],
-	'@valenced/react': ['React', 'ReactNative'],
-	'@valenced/modules/finders': ['getModules', 'withProps', 'withName'],
-	'@valenced/patcher': ['before', 'after', 'instead'],
-	'@valenced/externals/react-native-clipboard': ['Clipboard'],
-}
+const KNOWN_API = new Set([
+	'@valenced/discord/design',
+	'@valenced/react',
+	'@valenced/modules/finders',
+	'@valenced/patcher',
+	'@valenced/externals/react-native-clipboard',
+])
 
 // Only understands ranges like ">=1 <2", which is all valenced.api uses.
 function satisfiesMajor(version: string, range: string) {
@@ -41,9 +33,7 @@ async function loadPlugins(): Promise<any[]> {
 	let plugins: unknown = []
 	try {
 		plugins = await getInstalledPlugins()
-	} catch {
-		// Fall through to the global registry below.
-	}
+	} catch {}
 	if (Array.isArray(plugins) && plugins.length > 0) return plugins
 
 	const registry = (globalThis as any).__valenced?.plugins
@@ -69,7 +59,7 @@ export async function checkAllPlugins(): Promise<CompatibilityReport[]> {
 
 		const imports: string[] = manifest?.imports ?? []
 		for (const path of imports) {
-			if (!KNOWN_API[path]) {
+			if (!KNOWN_API.has(path)) {
 				problems.push({
 					id: path,
 					type: 'api',

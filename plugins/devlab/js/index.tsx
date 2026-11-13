@@ -7,11 +7,7 @@ import { TOOLS } from './tools'
 import type { DevLabState } from './storage'
 
 const SETTINGS_KEY = 'shin.devlab.settings'
-const SECTION = 'VALENCED'
-const SECTION_RETRY_MS = 20
-const SECTION_MAX_ATTEMPTS = 500
 
-// Each tool is its own screen so the system back gesture returns to the Tools tab.
 const toolItems: Record<string, settings.SettingsItem> = {}
 for (const { route, title, Screen } of TOOLS) {
 	toolItems[route] = {
@@ -23,42 +19,25 @@ for (const { route, title, Screen } of TOOLS) {
 	}
 }
 
-const initialState: DevLabState = { entries: [], enabled: true }
-
-// addSettingsItemToSection throws while the section doesn't exist yet.
-function sectionExists() {
-	try {
-		settings.addSettingsItemToSection(SECTION, items => items)()
-		return true
-	} catch {
-		return false
-	}
-}
-
 export default plugin<{ jsonStorage: DevLabState }>({
 	jsonStorage: {
 		load: true,
-		default: initialState,
+		default: { entries: [], enabled: true },
 	},
 
 	SettingsComponent: DevLabSettings,
 
-	start({ cleanup, plugin: self, jsonStorage, logger }) {
+	start({ cleanup, plugin: self, jsonStorage }) {
 		bindStorage(jsonStorage)
 		setPluginApi(self)
 
-		const report = (error: unknown, context: string) => {
-			recordError(error, context).catch(() => {})
-		}
-
-		// Errors other plugins report through the plugin API end up in the Errors tab.
-		self.reportError = error => report(error, 'Reported plugin error')
+		self.reportError = error => recordError(error, 'Reported plugin error')
 
 		const errorUtils = (globalThis as any).ErrorUtils
 		const previousHandler = errorUtils?.getGlobalHandler?.()
 
 		errorUtils?.setGlobalHandler?.((error: Error, isFatal: boolean) => {
-			report(error, isFatal ? 'Fatal error' : 'Unhandled error')
+			recordError(error, isFatal ? 'Fatal error' : 'Unhandled error')
 			previousHandler?.(error, isFatal)
 		})
 
@@ -66,33 +45,7 @@ export default plugin<{ jsonStorage: DevLabState }>({
 			if (previousHandler) errorUtils?.setGlobalHandler?.(previousHandler)
 		})
 
-		// DevLab also gets its own row in Discord settings :>
 		const undo: Array<() => void> = []
-		let stopped = false
-		let retryTimer: ReturnType<typeof setTimeout> | undefined
-		let attempts = 0
-
-		const placeInSection = () => {
-			if (stopped) return
-
-			if (!sectionExists()) {
-				if (++attempts < SECTION_MAX_ATTEMPTS) {
-					retryTimer = setTimeout(placeInSection, SECTION_RETRY_MS)
-				}
-				return
-			}
-
-			undo.push(
-				settings.registerSettingsSection
-					? settings.registerSettingsSection(SETTINGS_KEY, {
-							label: 'DevLab',
-							settings: [SETTINGS_KEY],
-							index: 1,
-						})
-					: settings.addSettingsItemToSection(SECTION, SETTINGS_KEY),
-			)
-			settings.refreshSettings()
-		}
 
 		const stopListening = settings.onSettingsModulesLoaded(() => {
 			undo.push(
@@ -102,20 +55,20 @@ export default plugin<{ jsonStorage: DevLabState }>({
 						parent: null,
 						IconComponent: lookupGeneratedIconComponent('WrenchIcon'),
 						useTitle: () => 'DevLab',
-						screen: {
-							route: SETTINGS_KEY,
-							getComponent: () => DevLabSettings,
-						},
+						screen: { route: SETTINGS_KEY, getComponent: () => DevLabSettings },
 					},
 					...toolItems,
 				}),
+				settings.registerSettingsSection(SETTINGS_KEY, {
+					label: 'DevLab',
+					settings: [SETTINGS_KEY],
+					index: 1,
+				}),
 			)
-			placeInSection()
+			settings.refreshSettings()
 		})
 
 		cleanup(stopListening, () => {
-			stopped = true
-			clearTimeout(retryTimer)
 			for (const remove of undo.splice(0)) {
 				try {
 					remove()
@@ -125,7 +78,5 @@ export default plugin<{ jsonStorage: DevLabState }>({
 			}
 			settings.refreshSettings()
 		})
-
-		logger.log('DevLab started')
 	},
 })
